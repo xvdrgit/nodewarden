@@ -3,7 +3,7 @@ import { StorageService } from '../services/storage';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { generateUUID } from '../utils/uuid';
 import { createFileDownloadToken, verifyFileDownloadToken } from '../utils/jwt';
-import { cipherToResponse } from './ciphers';
+import { cipherToResponse, shouldOmitPasskeysForResponse } from './ciphers';
 import { LIMITS } from '../config/limits';
 import {
   deleteBlobObject,
@@ -84,7 +84,9 @@ export async function handleCreateAttachment(
     attachmentId: attachmentId,
     url: `/api/ciphers/${cipherId}/attachment/${attachmentId}`,
     fileUploadType: 0, // Direct upload
-    cipherResponse: cipherToResponse(updatedCipher!, attachments),
+    cipherResponse: cipherToResponse(updatedCipher!, attachments, {
+      omitFido2Credentials: shouldOmitPasskeysForResponse(request),
+    }),
   });
 }
 
@@ -309,7 +311,9 @@ export async function handleDeleteAttachment(
   const attachments = await storage.getAttachmentsByCipher(cipherId);
 
   return jsonResponse({
-    cipher: cipherToResponse(updatedCipher!, attachments),
+    cipher: cipherToResponse(updatedCipher!, attachments, {
+      omitFido2Credentials: shouldOmitPasskeysForResponse(request),
+    }),
   });
 }
 

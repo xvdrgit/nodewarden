@@ -284,6 +284,8 @@ export interface UserDecryptionOptions {
   Object: string;
   // Bitwarden Android 2026.1.x expects this to exist; missing it breaks unlock when the vault is empty.
   MasterPasswordUnlock: MasterPasswordUnlock;
+  TrustedDeviceOption: null;
+  KeyConnectorOption: null;
 }
 
 // API Response types
@@ -303,7 +305,14 @@ export interface TokenResponse {
   ResetMasterPassword: boolean;
   scope: string;
   unofficialServer: boolean;
+  MasterPasswordPolicy?: {
+    Object: string;
+  } | null;
+  ApiUseKeyConnector?: boolean;
+  AccountKeys?: any | null;
+  accountKeys?: any | null;
   UserDecryptionOptions: UserDecryptionOptions;
+  userDecryptionOptions?: UserDecryptionOptions;
 }
 
 export interface ProfileResponse {

@@ -79,14 +79,14 @@ export default function SecurityDevicesPage(props: SecurityDevicesPageProps) {
           <tbody>
             {props.devices.map((device) => (
               <tr key={device.identifier}>
-                <td>
+                <td data-label={t('txt_device')}>
                   <div>{device.name || t('txt_unknown_device')}</div>
                   <div className="muted-inline">{device.identifier}</div>
                 </td>
-                <td>{mapDeviceTypeName(device.type)}</td>
-                <td>{formatDateTime(device.creationDate)}</td>
-                <td>{formatDateTime(device.revisionDate)}</td>
-                <td>
+                <td data-label={t('txt_type')}>{mapDeviceTypeName(device.type)}</td>
+                <td data-label={t('txt_added')}>{formatDateTime(device.creationDate)}</td>
+                <td data-label={t('txt_last_seen')}>{formatDateTime(device.revisionDate)}</td>
+                <td data-label={t('txt_trusted_until')}>
                   {device.trusted ? (
                     <div className="trusted-cell">
                       <Clock3 size={13} />
@@ -96,7 +96,7 @@ export default function SecurityDevicesPage(props: SecurityDevicesPageProps) {
                     <span className="muted-inline">{t('txt_not_trusted')}</span>
                   )}
                 </td>
-                <td>
+                <td data-label={t('txt_actions')}>
                   <div className="actions">
                     <button
                       type="button"

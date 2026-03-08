@@ -3,7 +3,7 @@ import { StorageService } from '../services/storage';
 import { errorResponse, jsonResponse } from '../utils/response';
 import { generateUUID } from '../utils/uuid';
 import { LIMITS } from '../config/limits';
-import { normalizeCipherLoginForCompatibility, normalizeCipherSshKeyForCompatibility } from './ciphers';
+import { normalizeCipherLoginForStorage, normalizeCipherSshKeyForCompatibility } from './ciphers';
 
 // Bitwarden client import request format
 interface CiphersImportRequest {
@@ -232,7 +232,7 @@ export async function handleCiphersImport(request: Request, env: Env, userId: st
       updatedAt: now,
       deletedAt: null,
     };
-    cipher.login = normalizeCipherLoginForCompatibility(cipher.login);
+    cipher.login = normalizeCipherLoginForStorage(cipher.login);
 
     cipherRows.push(cipher);
     cipherMapRows.push({ index: i, sourceId, id: cipher.id });

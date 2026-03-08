@@ -7,6 +7,7 @@ import { generateUUID } from '../utils/uuid';
 import { LIMITS } from '../config/limits';
 import { isTotpEnabled, verifyTotpToken } from '../utils/totp';
 import { createRecoveryCode, recoveryCodeEquals } from '../utils/recovery-code';
+import { buildAccountKeys } from '../utils/user-decryption';
 
 function looksLikeEncString(value: string): boolean {
   if (!value) return false;
@@ -61,6 +62,7 @@ function jwtSecretUnsafeReason(env: Env): 'missing' | 'default' | 'too_short' | 
 }
 
 function toProfile(user: User, env: Env): ProfileResponse {
+  void env;
   return {
     id: user.id,
     name: user.name,
@@ -74,7 +76,7 @@ function toProfile(user: User, env: Env): ProfileResponse {
     twoFactorEnabled: !!user.totpSecret,
     key: user.key,
     privateKey: user.privateKey,
-    accountKeys: null,
+    accountKeys: buildAccountKeys(user),
     securityStamp: user.securityStamp || user.id,
     organizations: [],
     providers: [],

@@ -9,6 +9,10 @@ import { createRefreshToken } from '../utils/jwt';
 import { readAuthRequestDeviceInfo } from '../utils/device';
 import { createRecoveryCode, recoveryCodeEquals } from '../utils/recovery-code';
 import { issueSendAccessToken } from './sends';
+import {
+  buildAccountKeys,
+  buildUserDecryptionOptions,
+} from '../utils/user-decryption';
 
 const TWO_FACTOR_REMEMBER_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const TWO_FACTOR_PROVIDER_AUTHENTICATOR = 0;
@@ -241,30 +245,22 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
       ...(trustedTwoFactorTokenToReturn ? { TwoFactorToken: trustedTwoFactorTokenToReturn } : {}),
       Key: user.key,
       PrivateKey: user.privateKey,
+      AccountKeys: buildAccountKeys(user),
+      accountKeys: buildAccountKeys(user),
       Kdf: user.kdfType,
       KdfIterations: user.kdfIterations,
       KdfMemory: user.kdfMemory,
       KdfParallelism: user.kdfParallelism,
       ForcePasswordReset: false,
       ResetMasterPassword: false,
+      MasterPasswordPolicy: {
+        Object: 'masterPasswordPolicy',
+      },
+      ApiUseKeyConnector: false,
       scope: 'api offline_access',
       unofficialServer: true,
-      UserDecryptionOptions: {
-        HasMasterPassword: true,
-        Object: 'userDecryptionOptions',
-        MasterPasswordUnlock: {
-          Kdf: {
-            KdfType: user.kdfType,
-            Iterations: user.kdfIterations,
-            Memory: user.kdfMemory || null,
-            Parallelism: user.kdfParallelism || null,
-          },
-          MasterKeyEncryptedUserKey: user.key,
-          MasterKeyWrappedUserKey: user.key,
-          Salt: email, // email is already lowercased above
-          Object: 'masterPasswordUnlock',
-        },
-      },
+      UserDecryptionOptions: buildUserDecryptionOptions(user),
+      userDecryptionOptions: buildUserDecryptionOptions(user),
     };
 
     return jsonResponse(response);
@@ -360,30 +356,22 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
       refresh_token: newRefreshToken,
       Key: user.key,
       PrivateKey: user.privateKey,
+      AccountKeys: buildAccountKeys(user),
+      accountKeys: buildAccountKeys(user),
       Kdf: user.kdfType,
       KdfIterations: user.kdfIterations,
       KdfMemory: user.kdfMemory,
       KdfParallelism: user.kdfParallelism,
       ForcePasswordReset: false,
       ResetMasterPassword: false,
+      MasterPasswordPolicy: {
+        Object: 'masterPasswordPolicy',
+      },
+      ApiUseKeyConnector: false,
       scope: 'api offline_access',
       unofficialServer: true,
-      UserDecryptionOptions: {
-        HasMasterPassword: true,
-        Object: 'userDecryptionOptions',
-        MasterPasswordUnlock: {
-          Kdf: {
-            KdfType: user.kdfType,
-            Iterations: user.kdfIterations,
-            Memory: user.kdfMemory || null,
-            Parallelism: user.kdfParallelism || null,
-          },
-          MasterKeyEncryptedUserKey: user.key,
-          MasterKeyWrappedUserKey: user.key,
-          Salt: user.email.toLowerCase(),
-          Object: 'masterPasswordUnlock',
-        },
-      },
+      UserDecryptionOptions: buildUserDecryptionOptions(user),
+      userDecryptionOptions: buildUserDecryptionOptions(user),
     };
 
     return jsonResponse(response);

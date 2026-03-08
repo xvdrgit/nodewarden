@@ -56,11 +56,11 @@ export default function AdminPage(props: AdminPageProps) {
           <tbody>
             {props.users.map((user) => (
               <tr key={user.id}>
-                <td>{user.email}</td>
-                <td>{user.name || t('txt_dash')}</td>
-                <td>{roleText(user.role)}</td>
-                <td>{statusText(user.status)}</td>
-                <td>
+                <td data-label={t('txt_email')}>{user.email}</td>
+                <td data-label={t('txt_name')}>{user.name || t('txt_dash')}</td>
+                <td data-label={t('txt_role')}>{roleText(user.role)}</td>
+                <td data-label={t('txt_status')}>{statusText(user.status)}</td>
+                <td data-label={t('txt_actions')}>
                   <div className="actions">
                     <button
                       type="button"
@@ -126,10 +126,10 @@ export default function AdminPage(props: AdminPageProps) {
           <tbody>
             {pagedInvites.map((invite) => (
               <tr key={invite.code}>
-                <td>{invite.code}</td>
-                <td>{statusText(invite.status)}</td>
-                <td>{formatExpiresAt(invite.expiresAt)}</td>
-                <td>
+                <td data-label={t('txt_code')}>{invite.code}</td>
+                <td data-label={t('txt_status')}>{statusText(invite.status)}</td>
+                <td data-label={t('txt_expires_at')}>{formatExpiresAt(invite.expiresAt)}</td>
+                <td data-label={t('txt_actions')}>
                   <div className="actions invite-row-actions">
                     <button
                       type="button"

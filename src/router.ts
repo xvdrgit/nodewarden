@@ -99,6 +99,10 @@ import {
   handleAdminSetUserStatus,
   handleAdminDeleteUser,
 } from './handlers/admin';
+import {
+  handleAdminExportBackup,
+  handleAdminImportBackup,
+} from './handlers/backup';
 
 function isSameOriginWriteRequest(request: Request): boolean {
   const targetOrigin = new URL(request.url).origin;
@@ -269,11 +273,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
   try {
 
     // Reject oversized bodies before any path-specific parsing.
-    // File upload paths enforce their own limits and are exempt here.
-    const isFileUploadPath =
+    // Large file/archive upload paths enforce their own limits and are exempt here.
+    const isLargeUploadPath =
       /^\/api\/ciphers\/[a-f0-9-]+\/attachment\/[a-f0-9-]+$/i.test(path) ||
-      /^\/api\/sends\/[a-f0-9-]+\/file\/[a-f0-9-]+$/i.test(path);
-    if (!isFileUploadPath) {
+      /^\/api\/sends\/[a-f0-9-]+\/file\/[a-f0-9-]+$/i.test(path) ||
+      path === '/api/admin/backup/import';
+    if (!isLargeUploadPath) {
       const contentLength = parseInt(request.headers.get('Content-Length') || '0', 10);
       if (contentLength > LIMITS.request.maxBodyBytes) {
         return errorResponse('Request body too large', 413);
@@ -769,6 +774,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     // Admin endpoints
     if (path === '/api/admin/users' && method === 'GET') {
       return handleAdminListUsers(request, env, currentUser);
+    }
+
+    if (path === '/api/admin/backup/export' && method === 'POST') {
+      return handleAdminExportBackup(request, env, currentUser);
+    }
+
+    if (path === '/api/admin/backup/import' && method === 'POST') {
+      return handleAdminImportBackup(request, env, currentUser);
     }
 
     if (path === '/api/admin/invites') {

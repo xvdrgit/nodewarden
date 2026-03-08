@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowUpDown, Cloud, Clock3, KeyRound, Lock, LogOut, Send as SendIcon, Settings as SettingsIcon, Shield, ShieldUser } from 'lucide-preact';
+import { ArrowUpDown, Cloud, Clock3, Folder, KeyRound, Lock, LogOut, Send as SendIcon, Settings as SettingsIcon, Shield, ShieldUser } from 'lucide-preact';
 import AuthViews from '@/components/AuthViews';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import ToastHost from '@/components/ToastHost';
@@ -27,6 +27,8 @@ import {
   createAuthedFetch,
   createInvite,
   downloadCipherAttachmentDecrypted,
+  exportAdminBackup,
+  importAdminBackup,
   importCiphers,
   createSend,
   deleteAllInvites,
@@ -97,6 +99,8 @@ const SEND_KEY_SALT = 'bitwarden-send';
 const SEND_KEY_PURPOSE = 'send';
 const IMPORT_ROUTE = '/help/import-export';
 const IMPORT_ROUTE_ALIASES = new Set(['/tools/import', '/tools/import-export', '/tools/import-data', '/import', '/import-export']);
+const SETTINGS_HOME_ROUTE = '/settings';
+const SETTINGS_ACCOUNT_ROUTE = '/settings/account';
 
 function looksLikeCipherString(value: string): boolean {
   return /^\d+\.[A-Za-z0-9+/=]+\|[A-Za-z0-9+/=]+(?:\|[A-Za-z0-9+/=]+)?$/.test(String(value || '').trim());
@@ -107,9 +111,30 @@ function asText(value: unknown): string {
   return String(value);
 }
 
+function readInviteCodeFromUrl(): string {
+  if (typeof window === 'undefined') return '';
+
+  const searchInvite = new URLSearchParams(window.location.search || '').get('invite');
+  if (searchInvite && searchInvite.trim()) return searchInvite.trim();
+
+  const rawHash = String(window.location.hash || '');
+  const queryIndex = rawHash.indexOf('?');
+  if (queryIndex >= 0) {
+    const hashInvite = new URLSearchParams(rawHash.slice(queryIndex + 1)).get('invite');
+    if (hashInvite && hashInvite.trim()) return hashInvite.trim();
+  }
+
+  return '';
+}
+
 function summarizeImportResult(
   ciphers: Array<Record<string, unknown>>,
-  folderCount: number
+  folderCount: number,
+  attachmentSummary?: {
+    total: number;
+    imported: number;
+    failed: Array<{ fileName: string; reason: string }>;
+  }
 ): ImportResultSummary {
   const typeLabel = (type: number): string => {
     if (type === 1) return t('txt_login');
@@ -136,6 +161,9 @@ function summarizeImportResult(
     totalItems: ciphers.length,
     folderCount: Math.max(0, folderCount),
     typeCounts,
+    attachmentCount: Math.max(0, attachmentSummary?.total || 0),
+    importedAttachmentCount: Math.max(0, attachmentSummary?.imported || 0),
+    failedAttachments: attachmentSummary?.failed || [],
   };
 }
 
@@ -290,6 +318,7 @@ export default function App() {
     password2: '',
     inviteCode: '',
   });
+  const [inviteCodeFromUrl, setInviteCodeFromUrl] = useState('');
   const [unlockPassword, setUnlockPassword] = useState('');
   const [pendingTotp, setPendingTotp] = useState<PendingTotp | null>(null);
   const [totpCode, setTotpCode] = useState('');
@@ -308,10 +337,53 @@ export default function App() {
   } | null>(null);
 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [mobileLayout, setMobileLayout] = useState(false);
   const [decryptedFolders, setDecryptedFolders] = useState<Folder[]>([]);
   const [decryptedCiphers, setDecryptedCiphers] = useState<Cipher[]>([]);
   const [decryptedSends, setDecryptedSends] = useState<Send[]>([]);
   const migratedPlainFolderIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const syncInviteFromUrl = () => {
+      setInviteCodeFromUrl(readInviteCodeFromUrl());
+    };
+    syncInviteFromUrl();
+    window.addEventListener('hashchange', syncInviteFromUrl);
+    window.addEventListener('popstate', syncInviteFromUrl);
+    return () => {
+      window.removeEventListener('hashchange', syncInviteFromUrl);
+      window.removeEventListener('popstate', syncInviteFromUrl);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!inviteCodeFromUrl) return;
+    setRegisterValues((prev) => (prev.inviteCode === inviteCodeFromUrl ? prev : { ...prev, inviteCode: inviteCodeFromUrl }));
+  }, [inviteCodeFromUrl]);
+
+  useEffect(() => {
+    if (!inviteCodeFromUrl) return;
+    if (phase === 'loading' || phase === 'locked' || phase === 'app') return;
+    setPhase('register');
+    if (location !== '/register') navigate('/register');
+    if (typeof window !== 'undefined' && typeof window.history?.replaceState === 'function') {
+      window.history.replaceState(null, '', '/register');
+    }
+    setInviteCodeFromUrl('');
+  }, [inviteCodeFromUrl, phase, location, navigate]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const media = window.matchMedia('(max-width: 900px)');
+    const sync = () => setMobileLayout(media.matches);
+    sync();
+    if (typeof media.addEventListener === 'function') {
+      media.addEventListener('change', sync);
+      return () => media.removeEventListener('change', sync);
+    }
+    media.addListener(sync);
+    return () => media.removeListener(sync);
+  }, []);
 
   function setSession(next: SessionState | null) {
     setSessionState(next);
@@ -513,6 +585,7 @@ export default function App() {
     }
     setLoginValues({ email: registerValues.email.toLowerCase(), password: '' });
     setPhase('login');
+    navigate('/login');
     pushToast('success', t('txt_registration_succeeded_please_sign_in'));
   }
 
@@ -551,7 +624,7 @@ export default function App() {
     setProfile(null);
     setPendingTotp(null);
     setPhase(setupRegistered ? 'login' : 'register');
-    navigate('/login');
+    navigate(setupRegistered ? '/login' : '/register');
   }
 
   function handleLogout() {
@@ -1122,13 +1195,16 @@ export default function App() {
   async function uploadImportedAttachments(
     attachments: ImportAttachmentFile[],
     idMaps: { byIndex: Map<number, string>; bySourceId: Map<string, string> }
-  ): Promise<void> {
-    if (!attachments.length) return;
+  ): Promise<{ total: number; imported: number; failed: Array<{ fileName: string; reason: string }> }> {
+    if (!attachments.length) {
+      return { total: 0, imported: 0, failed: [] };
+    }
     if (!session?.symEncKey || !session?.symMacKey) throw new Error(t('txt_vault_key_unavailable'));
 
     const initialCiphers = (await ciphersQuery.refetch()).data || [];
     const cipherById = new Map(initialCiphers.map((cipher) => [String(cipher.id || ''), cipher]));
-    const unresolved: ImportAttachmentFile[] = [];
+    const failed: Array<{ fileName: string; reason: string }> = [];
+    let imported = 0;
 
     for (const attachment of attachments) {
       const sourceId = String(attachment.sourceCipherId || '').trim();
@@ -1137,7 +1213,10 @@ export default function App() {
       const byIndex = Number.isFinite(sourceIndex) ? idMaps.byIndex.get(sourceIndex) : null;
       const targetCipherId = byId || byIndex || null;
       if (!targetCipherId) {
-        unresolved.push(attachment);
+        failed.push({
+          fileName: String(attachment.fileName || '').trim() || 'attachment.bin',
+          reason: t('txt_import_attachment_target_not_found'),
+        });
         continue;
       }
 
@@ -1145,14 +1224,23 @@ export default function App() {
       const fileBytes = Uint8Array.from(attachment.bytes);
       const file = new File([fileBytes], name, { type: 'application/octet-stream' });
       const cipher = cipherById.get(targetCipherId) || null;
-      await uploadCipherAttachment(authedFetch, session, targetCipherId, file, cipher);
-    }
-
-    if (unresolved.length) {
-      throw new Error(t('txt_failed_to_map_attachments', { count: unresolved.length }));
+      try {
+        await uploadCipherAttachment(authedFetch, session, targetCipherId, file, cipher);
+        imported += 1;
+      } catch (error) {
+        failed.push({
+          fileName: name,
+          reason: error instanceof Error ? error.message : t('txt_upload_attachment_failed'),
+        });
+      }
     }
 
     await ciphersQuery.refetch();
+    return {
+      total: attachments.length,
+      imported,
+      failed,
+    };
   }
 
   function toImportedCipherMapsFromResponse(
@@ -1252,10 +1340,10 @@ export default function App() {
     const idMaps = buildImportedCipherMaps(payload.ciphers, createdCipherIdsByIndex);
     await foldersQuery.refetch();
     await ciphersQuery.refetch();
-    if (attachments.length) {
-      await uploadImportedAttachments(attachments, idMaps);
-    }
-    return summarizeImportResult(payload.ciphers, mode === 'original' ? createdFolderCount : 0);
+    const attachmentSummary = attachments.length
+      ? await uploadImportedAttachments(attachments, idMaps)
+      : undefined;
+    return summarizeImportResult(payload.ciphers, mode === 'original' ? createdFolderCount : 0, attachmentSummary);
   }
 
   async function handleImportEncryptedRawAction(
@@ -1280,11 +1368,14 @@ export default function App() {
       returnCipherMap: attachments.length > 0,
     });
     await Promise.all([ciphersQuery.refetch(), foldersQuery.refetch()]);
-    if (attachments.length) {
-      const idMaps = toImportedCipherMapsFromResponse(importedCipherMap);
-      await uploadImportedAttachments(attachments, idMaps);
-    }
-    return summarizeImportResult(nextPayload.ciphers, mode === 'original' ? nextPayload.folders.length : 0);
+    const attachmentSummary = attachments.length
+      ? await uploadImportedAttachments(attachments, toImportedCipherMapsFromResponse(importedCipherMap))
+      : undefined;
+    return summarizeImportResult(
+      nextPayload.ciphers,
+      mode === 'original' ? nextPayload.folders.length : 0,
+      attachmentSummary
+    );
   }
 
   async function handleExportAction(request: ExportRequest) {
@@ -1519,6 +1610,30 @@ export default function App() {
     throw new Error(t('txt_unsupported_export_format'));
   }
 
+  function downloadBytesAsFile(bytes: Uint8Array, fileName: string, mimeType: string) {
+    const blob = new Blob([bytes], { type: mimeType || 'application/octet-stream' });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = objectUrl;
+    anchor.download = fileName || 'download.bin';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+  }
+
+  async function handleBackupExportAction() {
+    const payload = await exportAdminBackup(authedFetch);
+    downloadBytesAsFile(payload.bytes, payload.fileName, payload.mimeType);
+  }
+
+  async function handleBackupImportAction(file: File, replaceExisting: boolean = false) {
+    await importAdminBackup(authedFetch, file, replaceExisting);
+    window.setTimeout(() => {
+      logoutNow();
+    }, 200);
+  }
+
   const hashPathRaw = typeof window !== 'undefined' ? window.location.hash || '' : '';
   const hashPath = hashPathRaw.startsWith('#') ? hashPathRaw.slice(1) : hashPathRaw;
   const hashPathOnly = String(hashPath || '').split('?')[0].split('#')[0];
@@ -1529,6 +1644,27 @@ export default function App() {
   const isRecoverTwoFactorRoute = effectiveLocation === '/recover-2fa';
   const isPublicSendRoute = !!publicSendMatch;
   const isImportRoute = location === IMPORT_ROUTE || IMPORT_ROUTE_ALIASES.has(location);
+  const showSidebarToggle = mobileLayout && (location === '/vault' || location === '/sends');
+  const sidebarToggleTitle = location === '/vault' ? t('txt_folders') : t('txt_type');
+  const mobilePrimaryRoute =
+    location === '/sends'
+      ? '/sends'
+      : location === '/vault/totp'
+        ? '/vault/totp'
+        : location === '/vault'
+          ? '/vault'
+          : '/settings';
+  const currentPageTitle = (() => {
+    if (location === '/vault/totp') return t('txt_verification_code');
+    if (location === '/sends') return t('nav_sends');
+    if (location === '/admin') return t('nav_admin_panel');
+    if (location === '/security/devices') return t('nav_device_management');
+    if (location === '/help') return t('nav_backup_strategy');
+    if (isImportRoute) return t('nav_import_export');
+    if (location === SETTINGS_ACCOUNT_ROUTE) return t('nav_account_settings');
+    if (location === SETTINGS_HOME_ROUTE) return t('txt_settings');
+    return t('nav_my_vault');
+  })();
 
   useEffect(() => {
     if (phase === 'app' && location === '/' && !isPublicSendRoute) navigate('/vault');
@@ -1539,6 +1675,18 @@ export default function App() {
       navigate(IMPORT_ROUTE);
     }
   }, [phase, isImportHashRoute, location, navigate]);
+
+  useEffect(() => {
+    if (phase === 'app' && profile?.role !== 'admin' && location === '/help') {
+      navigate('/vault');
+    }
+  }, [phase, profile?.role, location, navigate]);
+
+  useEffect(() => {
+    if (phase === 'app' && !mobileLayout && location === SETTINGS_HOME_ROUTE) {
+      navigate(SETTINGS_ACCOUNT_ROUTE);
+    }
+  }, [phase, mobileLayout, location, navigate]);
 
   if (jwtWarning) {
     return <JwtWarningPage reason={jwtWarning.reason} minLength={jwtWarning.minLength} />;
@@ -1594,8 +1742,17 @@ export default function App() {
           onSubmitLogin={() => void handleLogin()}
           onSubmitRegister={() => void handleRegister()}
           onSubmitUnlock={() => void handleUnlock()}
-          onGotoLogin={() => setPhase('login')}
-          onGotoRegister={() => setPhase('register')}
+          onGotoLogin={() => {
+            setPhase('login');
+            navigate('/login');
+          }}
+          onGotoRegister={() => {
+            if (inviteCodeFromUrl) {
+              setRegisterValues((prev) => ({ ...prev, inviteCode: inviteCodeFromUrl }));
+            }
+            setPhase('register');
+            navigate('/register');
+          }}
           onLogout={logoutNow}
         />
         <ToastHost toasts={toasts} onClose={(id) => setToasts((prev) => prev.filter((x) => x.id !== id))} />
@@ -1651,7 +1808,8 @@ export default function App() {
           <header className="topbar">
             <div className="brand">
               <img src="/logo-64.png" alt="NodeWarden logo" className="brand-logo" />
-              <span>NodeWarden</span>
+              <span className="brand-name">NodeWarden</span>
+              <span className="mobile-page-title">{currentPageTitle}</span>
             </div>
             <div className="topbar-actions">
               <div className="user-chip">
@@ -1660,6 +1818,20 @@ export default function App() {
               </div>
               <button type="button" className="btn btn-secondary small" onClick={handleLock}>
                 <Lock size={14} className="btn-icon" /> {t('txt_lock')}
+              </button>
+              {showSidebarToggle && (
+                <button
+                  type="button"
+                  className="btn btn-secondary small mobile-sidebar-toggle"
+                  aria-label={sidebarToggleTitle}
+                  title={sidebarToggleTitle}
+                  onClick={() => window.dispatchEvent(new CustomEvent('nodewarden:toggle-sidebar'))}
+                >
+                  <Folder size={16} className="btn-icon" />
+                </button>
+              )}
+              <button type="button" className="btn btn-secondary small mobile-lock-btn" aria-label={t('txt_lock')} title={t('txt_lock')} onClick={handleLock}>
+                <Lock size={14} className="btn-icon" />
               </button>
               <button type="button" className="btn btn-secondary small" onClick={handleLogout}>
                 <LogOut size={14} className="btn-icon" /> {t('txt_sign_out')}
@@ -1687,7 +1859,7 @@ export default function App() {
                   <span>{t('nav_admin_panel')}</span>
                 </Link>
               )}
-              <Link href="/settings" className={`side-link ${location === '/settings' ? 'active' : ''}`}>
+              <Link href={SETTINGS_ACCOUNT_ROUTE} className={`side-link ${location === SETTINGS_ACCOUNT_ROUTE ? 'active' : ''}`}>
                 <SettingsIcon size={16} />
                 <span>{t('nav_account_settings')}</span>
               </Link>
@@ -1695,10 +1867,12 @@ export default function App() {
                 <Shield size={16} />
                 <span>{t('nav_device_management')}</span>
               </Link>
-              <Link href="/help" className={`side-link ${location === '/help' ? 'active' : ''}`}>
-                <Cloud size={16} />
-                <span>{t('nav_backup_strategy')}</span>
-              </Link>
+              {profile?.role === 'admin' && (
+                <Link href="/help" className={`side-link ${location === '/help' ? 'active' : ''}`}>
+                  <Cloud size={16} />
+                  <span>{t('nav_backup_strategy')}</span>
+                </Link>
+              )}
               <Link href={IMPORT_ROUTE} className={`side-link ${isImportRoute ? 'active' : ''}`}>
                 <ArrowUpDown size={14} />
                 <span>{t('nav_import_export')}</span>
@@ -1740,127 +1914,203 @@ export default function App() {
                     onDownloadAttachment={downloadVaultAttachment}
                   />
                 </Route>
+                <Route path={SETTINGS_ACCOUNT_ROUTE}>
+                  {profile && (
+                    <div className="stack">
+                      {mobileLayout && (
+                        <div className="mobile-settings-subhead">
+                          <button type="button" className="btn btn-secondary small mobile-settings-back" onClick={() => navigate(SETTINGS_HOME_ROUTE)}>
+                            <span className="btn-icon" aria-hidden="true">{"<"}</span>
+                            {t('txt_back')}
+                          </button>
+                        </div>
+                      )}
+                      <SettingsPage
+                        profile={profile}
+                        totpEnabled={!!totpStatusQuery.data?.enabled}
+                        onChangePassword={changePasswordAction}
+                        onEnableTotp={async (secret, token) => {
+                          await enableTotpAction(secret, token);
+                          await totpStatusQuery.refetch();
+                        }}
+                        onOpenDisableTotp={() => setDisableTotpOpen(true)}
+                        onGetRecoveryCode={getRecoveryCodeAction}
+                        onNotify={pushToast}
+                      />
+                    </div>
+                  )}
+                </Route>
                 <Route path="/settings">
                   {profile && (
-                    <SettingsPage
-                      profile={profile}
-                      totpEnabled={!!totpStatusQuery.data?.enabled}
-                      onChangePassword={changePasswordAction}
-                      onEnableTotp={async (secret, token) => {
-                        await enableTotpAction(secret, token);
-                        await totpStatusQuery.refetch();
-                      }}
-                      onOpenDisableTotp={() => setDisableTotpOpen(true)}
-                      onGetRecoveryCode={getRecoveryCodeAction}
-                      onNotify={pushToast}
-                    />
+                    <section className="card mobile-settings-card">
+                      <div className="mobile-settings-links">
+                        <Link href={SETTINGS_ACCOUNT_ROUTE} className="mobile-settings-link">
+                          <SettingsIcon size={18} />
+                          <span>{t('nav_account_settings')}</span>
+                        </Link>
+                        <Link href="/security/devices" className="mobile-settings-link">
+                          <Shield size={18} />
+                          <span>{t('nav_device_management')}</span>
+                        </Link>
+                        <Link href={IMPORT_ROUTE} className="mobile-settings-link">
+                          <ArrowUpDown size={18} />
+                          <span>{t('nav_import_export')}</span>
+                        </Link>
+                        {profile.role === 'admin' && (
+                          <Link href="/admin" className="mobile-settings-link">
+                            <ShieldUser size={18} />
+                            <span>{t('nav_admin_panel')}</span>
+                          </Link>
+                        )}
+                        {profile.role === 'admin' && (
+                          <Link href="/help" className="mobile-settings-link">
+                            <Cloud size={18} />
+                            <span>{t('nav_backup_strategy')}</span>
+                          </Link>
+                        )}
+                      </div>
+                      <button type="button" className="btn btn-secondary mobile-settings-logout" onClick={handleLogout}>
+                        <LogOut size={14} className="btn-icon" />
+                        {t('txt_sign_out')}
+                      </button>
+                    </section>
                   )}
                 </Route>
                 <Route path="/security/devices">
-                  <SecurityDevicesPage
-                    devices={authorizedDevicesQuery.data || []}
-                    loading={authorizedDevicesQuery.isFetching}
-                    onRefresh={() => void refreshAuthorizedDevices()}
-                    onRevokeTrust={(device) => {
-                      setConfirm({
-                        title: t('txt_revoke_device_authorization'),
-                        message: t('txt_revoke_30_day_totp_trust_for_name', { name: device.name }),
-                        danger: true,
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void revokeDeviceTrustAction(device);
-                        },
-                      });
-                    }}
-                    onRemoveDevice={(device) => {
-                      setConfirm({
-                        title: t('txt_remove_device'),
-                        message: t('txt_remove_device_name_and_clear_its_2fa_trust', { name: device.name }),
-                        danger: true,
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void removeDeviceAction(device);
-                        },
-                      });
-                    }}
-                    onRevokeAll={() => {
-                      setConfirm({
-                        title: t('txt_revoke_all_trusted_devices'),
-                        message: t('txt_revoke_30_day_totp_trust_from_all_devices'),
-                        danger: true,
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void revokeAllDeviceTrustAction();
-                        },
-                      });
-                    }}
-                  />
+                  <div className="stack">
+                    {mobileLayout && (
+                      <div className="mobile-settings-subhead">
+                        <button type="button" className="btn btn-secondary small mobile-settings-back" onClick={() => navigate(SETTINGS_HOME_ROUTE)}>
+                          <span className="btn-icon" aria-hidden="true">{"<"}</span>
+                          {t('txt_back')}
+                        </button>
+                      </div>
+                    )}
+                    <SecurityDevicesPage
+                      devices={authorizedDevicesQuery.data || []}
+                      loading={authorizedDevicesQuery.isFetching}
+                      onRefresh={() => void refreshAuthorizedDevices()}
+                      onRevokeTrust={(device) => {
+                        setConfirm({
+                          title: t('txt_revoke_device_authorization'),
+                          message: t('txt_revoke_30_day_totp_trust_for_name', { name: device.name }),
+                          danger: true,
+                          onConfirm: () => {
+                            setConfirm(null);
+                            void revokeDeviceTrustAction(device);
+                          },
+                        });
+                      }}
+                      onRemoveDevice={(device) => {
+                        setConfirm({
+                          title: t('txt_remove_device'),
+                          message: t('txt_remove_device_name_and_clear_its_2fa_trust', { name: device.name }),
+                          danger: true,
+                          onConfirm: () => {
+                            setConfirm(null);
+                            void removeDeviceAction(device);
+                          },
+                        });
+                      }}
+                      onRevokeAll={() => {
+                        setConfirm({
+                          title: t('txt_revoke_all_trusted_devices'),
+                          message: t('txt_revoke_30_day_totp_trust_from_all_devices'),
+                          danger: true,
+                          onConfirm: () => {
+                            setConfirm(null);
+                            void revokeAllDeviceTrustAction();
+                          },
+                        });
+                      }}
+                    />
+                  </div>
                 </Route>
                 <Route path="/admin">
-                  <AdminPage
-                    currentUserId={profile?.id || ''}
-                    users={usersQuery.data || []}
-                    invites={invitesQuery.data || []}
-                    onRefresh={() => {
-                      void usersQuery.refetch();
-                      void invitesQuery.refetch();
-                    }}
-                    onCreateInvite={async (hours) => {
-                      await createInvite(authedFetch, hours);
-                      await invitesQuery.refetch();
-                      pushToast('success', t('txt_invite_created'));
-                    }}
-                    onDeleteAllInvites={async () => {
-                      setConfirm({
-                        title: t('txt_delete_all_invites'),
-                        message: t('txt_delete_all_invite_codes_active_inactive'),
-                        danger: true,
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void (async () => {
-                            await deleteAllInvites(authedFetch);
-                            await invitesQuery.refetch();
-                            pushToast('success', t('txt_all_invites_deleted'));
-                          })();
-                        },
-                      });
-                    }}
-                    onToggleUserStatus={async (userId, status) => {
-                      await setUserStatus(authedFetch, userId, status === 'active' ? 'banned' : 'active');
-                      await usersQuery.refetch();
-                      pushToast('success', t('txt_user_status_updated'));
-                    }}
-                    onDeleteUser={async (userId) => {
-                      setConfirm({
-                        title: t('txt_delete_user'),
-                        message: t('txt_delete_this_user_and_all_user_data'),
-                        danger: true,
-                        onConfirm: () => {
-                          setConfirm(null);
-                          void (async () => {
-                            await deleteUser(authedFetch, userId);
-                            await usersQuery.refetch();
-                            pushToast('success', t('txt_user_deleted'));
-                          })();
-                        },
-                      });
-                    }}
-                    onRevokeInvite={async (code) => {
-                      await revokeInvite(authedFetch, code);
-                      await invitesQuery.refetch();
-                      pushToast('success', t('txt_invite_revoked'));
-                    }}
-                  />
+                  <div className="stack">
+                    {mobileLayout && (
+                      <div className="mobile-settings-subhead">
+                        <button type="button" className="btn btn-secondary small mobile-settings-back" onClick={() => navigate(SETTINGS_HOME_ROUTE)}>
+                          <span className="btn-icon" aria-hidden="true">{"<"}</span>
+                          {t('txt_back')}
+                        </button>
+                      </div>
+                    )}
+                    <AdminPage
+                      currentUserId={profile?.id || ''}
+                      users={usersQuery.data || []}
+                      invites={invitesQuery.data || []}
+                      onRefresh={() => {
+                        void usersQuery.refetch();
+                        void invitesQuery.refetch();
+                      }}
+                      onCreateInvite={async (hours) => {
+                        await createInvite(authedFetch, hours);
+                        await invitesQuery.refetch();
+                        pushToast('success', t('txt_invite_created'));
+                      }}
+                      onDeleteAllInvites={async () => {
+                        setConfirm({
+                          title: t('txt_delete_all_invites'),
+                          message: t('txt_delete_all_invite_codes_active_inactive'),
+                          danger: true,
+                          onConfirm: () => {
+                            setConfirm(null);
+                            void (async () => {
+                              await deleteAllInvites(authedFetch);
+                              await invitesQuery.refetch();
+                              pushToast('success', t('txt_all_invites_deleted'));
+                            })();
+                          },
+                        });
+                      }}
+                      onToggleUserStatus={async (userId, status) => {
+                        await setUserStatus(authedFetch, userId, status === 'active' ? 'banned' : 'active');
+                        await usersQuery.refetch();
+                        pushToast('success', t('txt_user_status_updated'));
+                      }}
+                      onDeleteUser={async (userId) => {
+                        setConfirm({
+                          title: t('txt_delete_user'),
+                          message: t('txt_delete_this_user_and_all_user_data'),
+                          danger: true,
+                          onConfirm: () => {
+                            setConfirm(null);
+                            void (async () => {
+                              await deleteUser(authedFetch, userId);
+                              await usersQuery.refetch();
+                              pushToast('success', t('txt_user_deleted'));
+                            })();
+                          },
+                        });
+                      }}
+                      onRevokeInvite={async (code) => {
+                        await revokeInvite(authedFetch, code);
+                        await invitesQuery.refetch();
+                        pushToast('success', t('txt_invite_revoked'));
+                      }}
+                    />
+                  </div>
                 </Route>
                 <Route path={IMPORT_ROUTE}>
-                  <ImportPage
-                    onImport={handleImportAction}
-                    onImportEncryptedRaw={handleImportEncryptedRawAction}
-                    accountKeys={session?.symEncKey && session?.symMacKey ? { encB64: session.symEncKey, macB64: session.symMacKey } : null}
-                    onNotify={pushToast}
-                    folders={decryptedFolders}
-                    onExport={handleExportAction}
-                  />
+                  <div className="stack">
+                    {mobileLayout && (
+                      <div className="mobile-settings-subhead">
+                        <button type="button" className="btn btn-secondary small mobile-settings-back" onClick={() => navigate(SETTINGS_HOME_ROUTE)}>
+                          <span className="btn-icon" aria-hidden="true">{"<"}</span>
+                          {t('txt_back')}
+                        </button>
+                      </div>
+                    )}
+                    <ImportPage
+                      onImport={handleImportAction}
+                      onImportEncryptedRaw={handleImportEncryptedRawAction}
+                      accountKeys={session?.symEncKey && session?.symMacKey ? { encB64: session.symEncKey, macB64: session.symMacKey } : null}
+                      onNotify={pushToast}
+                      folders={decryptedFolders}
+                      onExport={handleExportAction}
+                    />
+                  </div>
                 </Route>
                 <Route path="/tools/import">
                   <ImportPage
@@ -1913,11 +2163,42 @@ export default function App() {
                   />
                 </Route>
                 <Route path="/help">
-                  <HelpPage />
+                  {profile?.role === 'admin' ? (
+                    <div className="stack">
+                      {mobileLayout && (
+                        <div className="mobile-settings-subhead">
+                          <button type="button" className="btn btn-secondary small mobile-settings-back" onClick={() => navigate(SETTINGS_HOME_ROUTE)}>
+                            <span className="btn-icon" aria-hidden="true">{"<"}</span>
+                            {t('txt_back')}
+                          </button>
+                        </div>
+                      )}
+                      <HelpPage onExport={handleBackupExportAction} onImport={handleBackupImportAction} onNotify={pushToast} />
+                    </div>
+                  ) : null}
                 </Route>
               </Switch>
             </main>
           </div>
+
+          <nav className="mobile-tabbar" aria-label={t('txt_menu')}>
+            <Link href="/vault" className={`mobile-tab ${mobilePrimaryRoute === '/vault' ? 'active' : ''}`}>
+              <KeyRound size={18} />
+              <span>{t('nav_my_vault')}</span>
+            </Link>
+            <Link href="/vault/totp" className={`mobile-tab ${mobilePrimaryRoute === '/vault/totp' ? 'active' : ''}`}>
+              <Clock3 size={18} />
+              <span>{t('txt_verification_code')}</span>
+            </Link>
+            <Link href="/sends" className={`mobile-tab ${mobilePrimaryRoute === '/sends' ? 'active' : ''}`}>
+              <SendIcon size={18} />
+              <span>{t('nav_sends')}</span>
+            </Link>
+            <Link href="/settings" className={`mobile-tab ${mobilePrimaryRoute === '/settings' ? 'active' : ''}`}>
+              <SettingsIcon size={18} />
+              <span>{t('txt_settings')}</span>
+            </Link>
+          </nav>
         </div>
       </div>
 

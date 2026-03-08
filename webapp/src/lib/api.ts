@@ -63,6 +63,25 @@ async function parseJson<T>(response: Response): Promise<T | null> {
   }
 }
 
+function parseContentDispositionFileName(response: Response, fallback: string): string {
+  const header = String(response.headers.get('Content-Disposition') || '').trim();
+  if (!header) return fallback;
+
+  const utf8Match = header.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // Ignore malformed filename*= values and fall back to the plain filename.
+    }
+  }
+
+  const plainMatch = header.match(/filename\s*=\s*"([^"]+)"|filename\s*=\s*([^;]+)/i);
+  const raw = plainMatch?.[1] || plainMatch?.[2] || '';
+  const normalized = String(raw).trim().replace(/^"+|"+$/g, '');
+  return normalized || fallback;
+}
+
 export async function getSetupStatus(): Promise<SetupStatusResponse> {
   const resp = await fetch('/setup/status');
   const body = await parseJson<SetupStatusResponse>(resp);
@@ -804,6 +823,63 @@ export async function deleteUser(authedFetch: (input: string, init?: RequestInit
   if (!resp.ok) throw new Error('Delete user failed');
 }
 
+export interface AdminBackupImportCounts {
+  config: number;
+  users: number;
+  userRevisions: number;
+  folders: number;
+  ciphers: number;
+  attachments: number;
+  sends: number;
+  attachmentFiles: number;
+  sendFiles: number;
+}
+
+export interface AdminBackupImportResponse {
+  object: 'instance-backup-import';
+  imported: AdminBackupImportCounts;
+}
+
+export interface AdminBackupExportPayload {
+  fileName: string;
+  mimeType: string;
+  bytes: Uint8Array;
+}
+
+export async function exportAdminBackup(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>
+): Promise<AdminBackupExportPayload> {
+  const resp = await authedFetch('/api/admin/backup/export', { method: 'POST' });
+  if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Backup export failed'));
+
+  const mimeType = String(resp.headers.get('Content-Type') || 'application/zip').trim() || 'application/zip';
+  const fileName = parseContentDispositionFileName(resp, 'nodewarden_instance_backup.zip');
+  const bytes = new Uint8Array(await resp.arrayBuffer());
+  return { fileName, mimeType, bytes };
+}
+
+export async function importAdminBackup(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  file: File,
+  replaceExisting: boolean = false
+): Promise<AdminBackupImportResponse> {
+  const formData = new FormData();
+  formData.set('file', file, file.name || 'nodewarden_instance_backup.zip');
+  if (replaceExisting) {
+    formData.set('replaceExisting', '1');
+  }
+
+  const resp = await authedFetch('/api/admin/backup/import', {
+    method: 'POST',
+    body: formData,
+  });
+  if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Backup import failed'));
+
+  const body = await parseJson<AdminBackupImportResponse>(resp);
+  if (!body?.imported) throw new Error('Invalid backup import response');
+  return body;
+}
+
 function asNullable(v: string): string | null {
   const s = String(v || '').trim();
   return s ? s : null;
@@ -851,16 +927,6 @@ async function encryptUris(uris: string[], enc: Uint8Array, mac: Uint8Array): Pr
   return out;
 }
 
-function asFidoString(value: unknown, fallback = ''): string {
-  const normalized = String(value ?? '').trim();
-  return normalized || fallback;
-}
-
-function asNullableFidoString(value: unknown): string | null {
-  const normalized = String(value ?? '').trim();
-  return normalized || null;
-}
-
 function toIsoDateOrNow(value: unknown): string {
   const raw = String(value ?? '').trim();
   if (!raw) return new Date().toISOString();
@@ -869,26 +935,51 @@ function toIsoDateOrNow(value: unknown): string {
   return parsed.toISOString();
 }
 
-function normalizeFido2Credentials(
+async function encryptMaybeFidoValue(
+  value: unknown,
+  enc: Uint8Array,
+  mac: Uint8Array,
+  fallback = ''
+): Promise<string> {
+  const normalized = String(value ?? '').trim() || fallback;
+  if (looksLikeCipherString(normalized)) return normalized;
+  return encryptBw(new TextEncoder().encode(normalized), enc, mac);
+}
+
+async function encryptMaybeNullableFidoValue(
+  value: unknown,
+  enc: Uint8Array,
+  mac: Uint8Array
+): Promise<string | null> {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return null;
+  if (looksLikeCipherString(normalized)) return normalized;
+  return encryptBw(new TextEncoder().encode(normalized), enc, mac);
+}
+
+async function normalizeFido2Credentials(
   credentials: Array<Record<string, unknown>> | null | undefined
+  ,
+  enc: Uint8Array,
+  mac: Uint8Array
 ): Array<Record<string, unknown>> | null {
   if (!Array.isArray(credentials) || credentials.length === 0) return null;
   const out: Array<Record<string, unknown>> = [];
   for (const credential of credentials) {
     if (!credential || typeof credential !== 'object') continue;
     out.push({
-      credentialId: asFidoString(credential.credentialId),
-      keyType: asFidoString(credential.keyType, 'public-key'),
-      keyAlgorithm: asFidoString(credential.keyAlgorithm, 'ECDSA'),
-      keyCurve: asFidoString(credential.keyCurve, 'P-256'),
-      keyValue: asFidoString(credential.keyValue),
-      rpId: asFidoString(credential.rpId),
-      rpName: asNullableFidoString(credential.rpName),
-      userHandle: asNullableFidoString(credential.userHandle),
-      userName: asNullableFidoString(credential.userName),
-      userDisplayName: asNullableFidoString(credential.userDisplayName),
-      counter: asFidoString(credential.counter, '0'),
-      discoverable: asFidoString(credential.discoverable, 'false'),
+      credentialId: await encryptMaybeFidoValue(credential.credentialId, enc, mac),
+      keyType: await encryptMaybeFidoValue(credential.keyType, enc, mac, 'public-key'),
+      keyAlgorithm: await encryptMaybeFidoValue(credential.keyAlgorithm, enc, mac, 'ECDSA'),
+      keyCurve: await encryptMaybeFidoValue(credential.keyCurve, enc, mac, 'P-256'),
+      keyValue: await encryptMaybeFidoValue(credential.keyValue, enc, mac),
+      rpId: await encryptMaybeFidoValue(credential.rpId, enc, mac),
+      rpName: await encryptMaybeNullableFidoValue(credential.rpName, enc, mac),
+      userHandle: await encryptMaybeNullableFidoValue(credential.userHandle, enc, mac),
+      userName: await encryptMaybeNullableFidoValue(credential.userName, enc, mac),
+      userDisplayName: await encryptMaybeNullableFidoValue(credential.userDisplayName, enc, mac),
+      counter: await encryptMaybeFidoValue(credential.counter, enc, mac, '0'),
+      discoverable: await encryptMaybeFidoValue(credential.discoverable, enc, mac, 'false'),
       creationDate: toIsoDateOrNow(credential.creationDate),
     });
   }
@@ -937,7 +1028,7 @@ export async function createCipher(
       username: await encryptTextValue(draft.loginUsername, enc, mac),
       password: await encryptTextValue(draft.loginPassword, enc, mac),
       totp: await encryptTextValue(draft.loginTotp, enc, mac),
-      fido2Credentials: normalizeFido2Credentials(draft.loginFido2Credentials),
+      fido2Credentials: await normalizeFido2Credentials(draft.loginFido2Credentials, enc, mac),
       uris: await encryptUris(draft.loginUris || [], enc, mac),
     };
   } else if (type === 3) {
@@ -1032,7 +1123,7 @@ export async function updateCipher(
       username: await encryptTextValue(draft.loginUsername, keys.enc, keys.mac),
       password: await encryptTextValue(draft.loginPassword, keys.enc, keys.mac),
       totp: await encryptTextValue(draft.loginTotp, keys.enc, keys.mac),
-      fido2Credentials: normalizeFido2Credentials(existingFido2),
+      fido2Credentials: await normalizeFido2Credentials(existingFido2, keys.enc, keys.mac),
       uris: await encryptUris(draft.loginUris || [], keys.enc, keys.mac),
     };
   } else if (type === 3) {
