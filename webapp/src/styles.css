@@ -1600,6 +1600,29 @@ input[type='file'].input::file-selector-button:hover {
   gap: 6px;
 }
 
+.device-status-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.device-status-pill.online {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.device-status-pill.offline {
+  background: #e2e8f0;
+  color: #475569;
+}
+
 .dialog-mask {
   position: fixed;
   inset: 0;

@@ -1,7 +1,21 @@
 import { LIMITS } from '../config/limits';
 
 const CORS_METHODS = 'GET, POST, PUT, DELETE, PATCH, OPTIONS';
-const CORS_HEADERS = 'Content-Type, Authorization, Accept, Device-Type, Bitwarden-Client-Name, Bitwarden-Client-Version, X-Request-Email, X-Device-Identifier, X-Device-Name';
+const DEFAULT_CORS_HEADERS = [
+  'Content-Type',
+  'Authorization',
+  'Accept',
+  'Device-Type',
+  'Device-Identifier',
+  'Device-Name',
+  'Bitwarden-Client-Name',
+  'Bitwarden-Client-Version',
+  'Bitwarden-Package-Type',
+  'Is-Prerelease',
+  'X-Request-Email',
+  'X-Device-Identifier',
+  'X-Device-Name',
+];
 
 function isTrustedClientOrigin(origin: string): boolean {
   // Official browser extension / desktop-webview common origins.
@@ -25,15 +39,22 @@ function getAllowedOrigin(request: Request): string | null {
 }
 
 function buildCorsHeaders(request: Request): Record<string, string> {
+  const requestedHeaders = String(request.headers.get('Access-Control-Request-Headers') || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const allowHeaders = Array.from(new Set([...DEFAULT_CORS_HEADERS, ...requestedHeaders]));
+
   const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': CORS_METHODS,
-    'Access-Control-Allow-Headers': CORS_HEADERS,
+    'Access-Control-Allow-Headers': allowHeaders.join(', '),
     'Access-Control-Max-Age': String(LIMITS.cors.preflightMaxAgeSeconds),
   };
 
   const allowedOrigin = getAllowedOrigin(request);
   if (allowedOrigin) {
     headers['Access-Control-Allow-Origin'] = allowedOrigin;
+    headers['Access-Control-Allow-Credentials'] = 'true';
     headers['Vary'] = 'Origin';
   }
 
@@ -44,6 +65,12 @@ export function applyCors(
   request: Request,
   response: Response
 ): Response {
+  // WebSocket upgrade responses must be returned untouched.
+  const webSocket = (response as Response & { webSocket?: unknown }).webSocket;
+  if (response.status === 101 || webSocket) {
+    return response;
+  }
+
   const headers = new Headers(response.headers);
   const corsHeaders = buildCorsHeaders(request);
   for (const [k, v] of Object.entries(corsHeaders)) {

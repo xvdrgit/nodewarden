@@ -1,8 +1,19 @@
 import { Env, Folder, FolderResponse } from '../types';
+import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
 import { jsonResponse, errorResponse } from '../utils/response';
+import { readActingDeviceIdentifier } from '../utils/device';
 import { generateUUID } from '../utils/uuid';
 import { parsePagination, encodeContinuationToken } from '../utils/pagination';
+
+async function notifyVaultSyncForRequest(
+  request: Request,
+  env: Env,
+  userId: string,
+  revisionDate: string
+): Promise<void> {
+  await notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+}
 
 // Convert internal folder to API response format
 function folderToResponse(folder: Folder): FolderResponse {
@@ -75,7 +86,8 @@ export async function handleCreateFolder(request: Request, env: Env, userId: str
   };
 
   await storage.saveFolder(folder);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(folderToResponse(folder), 200);
 }
@@ -102,7 +114,8 @@ export async function handleUpdateFolder(request: Request, env: Env, userId: str
   folder.updatedAt = new Date().toISOString();
 
   await storage.saveFolder(folder);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(folderToResponse(folder));
 }
@@ -118,7 +131,8 @@ export async function handleDeleteFolder(request: Request, env: Env, userId: str
 
   await storage.clearFolderFromCiphers(userId, id);
   await storage.deleteFolder(id, userId);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return new Response(null, { status: 204 });
 }

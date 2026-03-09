@@ -1,6 +1,7 @@
 // Environment bindings
 export interface Env {
   DB: D1Database;
+  NOTIFICATIONS_HUB: DurableObjectNamespace;
   // Prefer R2 when available. Optional to support KV-only deployments.
   ATTACHMENTS?: R2Bucket;
   // Optional fallback for attachment/send file storage (no credit card required).
@@ -183,8 +184,16 @@ export interface Device {
   deviceIdentifier: string;
   name: string;
   type: number;
+  sessionStamp: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RefreshTokenRecord {
+  userId: string;
+  expiresAt: number;
+  deviceIdentifier: string | null;
+  deviceSessionStamp: string | null;
 }
 
 export interface TrustedDeviceTokenSummary {
@@ -257,6 +266,8 @@ export interface JWTPayload {
   email_verified: boolean; // required by mobile client
   amr: string[];    // authentication methods reference - required by mobile client
   sstamp: string;   // security stamp - invalidates token when user changes password
+  did?: string;     // device identifier - invalidates per-device sessions
+  dstamp?: string;  // device session stamp
   iat: number;
   exp: number;
   iss: string;

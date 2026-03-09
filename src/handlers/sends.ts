@@ -1,7 +1,9 @@
 import { Env, Send, SendAuthType, SendResponse, SendType, DEFAULT_DEV_SECRET } from '../types';
+import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
 import { RateLimitService, getClientIdentifier } from '../services/ratelimit';
 import { jsonResponse, errorResponse } from '../utils/response';
+import { readActingDeviceIdentifier } from '../utils/device';
 import { generateUUID } from '../utils/uuid';
 import { parsePagination, encodeContinuationToken } from '../utils/pagination';
 import { LIMITS } from '../config/limits';
@@ -22,6 +24,15 @@ import {
 const SEND_INACCESSIBLE_MSG = 'Send does not exist or is no longer available';
 const SEND_PASSWORD_ITERATIONS = 100_000;
 const SEND_PASSWORD_LIMIT_SCOPE = 'send-password';
+
+async function notifyVaultSyncForRequest(
+  request: Request,
+  env: Env,
+  userId: string,
+  revisionDate: string
+): Promise<void> {
+  await notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+}
 
 function getAliasedProp(source: unknown, aliases: string[]): { present: boolean; value: unknown } {
   if (!source || typeof source !== 'object') return { present: false, value: undefined };
@@ -604,7 +615,8 @@ export async function handleCreateSend(request: Request, env: Env, userId: strin
   }
 
   await storage.saveSend(send);
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(sendToResponse(send));
 }
@@ -727,7 +739,8 @@ export async function handleCreateFileSendV2(request: Request, env: Env, userId:
   }
 
   await storage.saveSend(send);
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse({
     fileUploadType: 0,
@@ -835,7 +848,8 @@ export async function handleUploadSendFile(
     return errorResponse('Attachment storage is not configured', 500);
   }
 
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return new Response(null, { status: 200 });
 }
@@ -981,7 +995,8 @@ export async function handleUpdateSend(request: Request, env: Env, userId: strin
 
   send.updatedAt = new Date().toISOString();
   await storage.saveSend(send);
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(sendToResponse(send));
 }
@@ -1004,7 +1019,8 @@ export async function handleDeleteSend(request: Request, env: Env, userId: strin
   }
 
   await storage.deleteSend(sendId, userId);
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return new Response(null, { status: 200 });
 }
@@ -1021,7 +1037,8 @@ export async function handleRemoveSendPassword(request: Request, env: Env, userI
   await setSendPassword(send, null);
   send.updatedAt = new Date().toISOString();
   await storage.saveSend(send);
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(sendToResponse(send));
 }
@@ -1039,7 +1056,8 @@ export async function handleRemoveSendAuth(request: Request, env: Env, userId: s
   send.emails = null;
   send.updatedAt = new Date().toISOString();
   await storage.saveSend(send);
-  await storage.updateRevisionDate(userId);
+  let revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(sendToResponse(send));
 }
@@ -1100,7 +1118,8 @@ export async function handleAccessSend(request: Request, env: Env, accessId: str
       return errorResponse(SEND_INACCESSIBLE_MSG, 404);
     }
     send.accessCount += 1;
-    await storage.updateRevisionDate(send.userId);
+    const revisionDate = await storage.updateRevisionDate(send.userId);
+      await notifyVaultSyncForRequest(request, env, send.userId, revisionDate);
   }
 
   const creatorIdentifier = await getCreatorIdentifier(storage, send);
@@ -1173,7 +1192,8 @@ export async function handleAccessSendFile(
     return errorResponse(SEND_INACCESSIBLE_MSG, 404);
   }
   send.accessCount += 1;
-  await storage.updateRevisionDate(send.userId);
+  const revisionDate = await storage.updateRevisionDate(send.userId);
+  await notifyVaultSyncForRequest(request, env, send.userId, revisionDate);
 
   const token = await createSendFileDownloadToken(send.id, fileId, secret);
   const url = new URL(request.url);
@@ -1213,7 +1233,8 @@ export async function handleAccessSendV2(request: Request, env: Env): Promise<Re
       return errorResponse(SEND_INACCESSIBLE_MSG, 404);
     }
     send.accessCount += 1;
-    await storage.updateRevisionDate(send.userId);
+    const revisionDate = await storage.updateRevisionDate(send.userId);
+      await notifyVaultSyncForRequest(request, env, send.userId, revisionDate);
   }
 
   const creatorIdentifier = await getCreatorIdentifier(storage, send);
@@ -1254,7 +1275,8 @@ export async function handleAccessSendFileV2(request: Request, env: Env, fileId:
     return errorResponse(SEND_INACCESSIBLE_MSG, 404);
   }
   send.accessCount += 1;
-  await storage.updateRevisionDate(send.userId);
+  const revisionDate = await storage.updateRevisionDate(send.userId);
+  await notifyVaultSyncForRequest(request, env, send.userId, revisionDate);
 
   const downloadToken = await createSendFileDownloadToken(send.id, fileId, secret);
   const url = new URL(request.url);

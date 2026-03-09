@@ -304,6 +304,7 @@ export interface AuthorizedDevice {
   type: number;
   creationDate: string | null;
   revisionDate: string | null;
+  online: boolean;
   trusted: boolean;
   trustedTokenCount: number;
   trustedUntil: string | null;

@@ -1,9 +1,20 @@
 import { Env, Cipher, CipherResponse, Attachment } from '../types';
 import { StorageService } from '../services/storage';
+import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { generateUUID } from '../utils/uuid';
 import { deleteAllAttachmentsForCipher } from './attachments';
 import { parsePagination, encodeContinuationToken } from '../utils/pagination';
+import { readActingDeviceIdentifier } from '../utils/device';
+
+async function notifyVaultSyncForRequest(
+  request: Request,
+  env: Env,
+  userId: string,
+  revisionDate: string
+): Promise<void> {
+  await notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+}
 
 function getAliasedProp(source: any, aliases: string[]): { present: boolean; value: any } {
   if (!source || typeof source !== 'object') return { present: false, value: undefined };
@@ -276,7 +287,8 @@ export async function handleCreateCipher(request: Request, env: Env, userId: str
   }
 
   await storage.saveCipher(cipher);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(
     cipherToResponse(cipher, [], {
@@ -342,7 +354,8 @@ export async function handleUpdateCipher(request: Request, env: Env, userId: str
   }
 
   await storage.saveCipher(cipher);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(
     cipherToResponse(cipher, [], {
@@ -364,7 +377,8 @@ export async function handleDeleteCipher(request: Request, env: Env, userId: str
   cipher.deletedAt = new Date().toISOString();
   cipher.updatedAt = cipher.deletedAt;
   await storage.saveCipher(cipher);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(
     cipherToResponse(cipher, [], {
@@ -389,7 +403,8 @@ export async function handleDeleteCipherCompat(request: Request, env: Env, userI
   if (cipher.deletedAt) {
     await deleteAllAttachmentsForCipher(env, id);
     await storage.deleteCipher(id, userId);
-    await storage.updateRevisionDate(userId);
+    const revisionDate = await storage.updateRevisionDate(userId);
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
     return new Response(null, { status: 204 });
   }
 
@@ -409,7 +424,8 @@ export async function handlePermanentDeleteCipher(request: Request, env: Env, us
   await deleteAllAttachmentsForCipher(env, id);
 
   await storage.deleteCipher(id, userId);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return new Response(null, { status: 204 });
 }
@@ -426,7 +442,8 @@ export async function handleRestoreCipher(request: Request, env: Env, userId: st
   cipher.deletedAt = null;
   cipher.updatedAt = new Date().toISOString();
   await storage.saveCipher(cipher);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(
     cipherToResponse(cipher, [], {
@@ -464,7 +481,8 @@ export async function handlePartialUpdateCipher(request: Request, env: Env, user
   cipher.updatedAt = new Date().toISOString();
 
   await storage.saveCipher(cipher);
-  await storage.updateRevisionDate(userId);
+  const revisionDate = await storage.updateRevisionDate(userId);
+  await notifyVaultSyncForRequest(request, env, userId, revisionDate);
 
   return jsonResponse(
     cipherToResponse(cipher, [], {
@@ -493,7 +511,10 @@ export async function handleBulkMoveCiphers(request: Request, env: Env, userId: 
     if (!folderOk) return errorResponse('Folder not found', 404);
   }
 
-  await storage.bulkMoveCiphers(body.ids, body.folderId || null, userId);
+  const revisionDate = await storage.bulkMoveCiphers(body.ids, body.folderId || null, userId);
+  if (revisionDate) {
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
+  }
 
   return new Response(null, { status: 204 });
 }

@@ -1,4 +1,5 @@
 import { base64ToBytes, bytesToBase64, decryptBw, decryptBwFileData, decryptStr, encryptBw, encryptBwFileData, hkdf, hkdfExpand, pbkdf2 } from './crypto';
+import { t } from './i18n';
 import type {
   AuthorizedDevice,
   AdminInvite,
@@ -117,6 +118,10 @@ function getOrCreateDeviceIdentifier(): string {
   const next = `${randomHex(8)}-${randomHex(4)}-${randomHex(4)}-${randomHex(4)}-${randomHex(12)}`;
   localStorage.setItem(DEVICE_IDENTIFIER_KEY, next);
   return next;
+}
+
+export function getCurrentDeviceIdentifier(): string {
+  return (localStorage.getItem(DEVICE_IDENTIFIER_KEY) || '').trim();
 }
 
 function guessDeviceName(): string {
@@ -744,7 +749,7 @@ export async function getAuthorizedDevices(
   authedFetch: (input: string, init?: RequestInit) => Promise<Response>
 ): Promise<AuthorizedDevice[]> {
   const resp = await authedFetch('/api/devices/authorized');
-  if (!resp.ok) throw new Error('Failed to load authorized devices');
+  if (!resp.ok) throw new Error(t('txt_load_devices_failed'));
   const body = await parseJson<ListResponse<AuthorizedDevice>>(resp);
   return body?.data || [];
 }
@@ -754,14 +759,14 @@ export async function revokeAuthorizedDeviceTrust(
   deviceIdentifier: string
 ): Promise<void> {
   const resp = await authedFetch(`/api/devices/authorized/${encodeURIComponent(deviceIdentifier)}`, { method: 'DELETE' });
-  if (!resp.ok) throw new Error('Failed to revoke device authorization');
+  if (!resp.ok) throw new Error(t('txt_revoke_device_trust_failed'));
 }
 
 export async function revokeAllAuthorizedDeviceTrust(
   authedFetch: (input: string, init?: RequestInit) => Promise<Response>
 ): Promise<void> {
   const resp = await authedFetch('/api/devices/authorized', { method: 'DELETE' });
-  if (!resp.ok) throw new Error('Failed to revoke all authorized devices');
+  if (!resp.ok) throw new Error(t('txt_revoke_all_device_trust_failed'));
 }
 
 export async function deleteAuthorizedDevice(
@@ -769,7 +774,14 @@ export async function deleteAuthorizedDevice(
   deviceIdentifier: string
 ): Promise<void> {
   const resp = await authedFetch(`/api/devices/${encodeURIComponent(deviceIdentifier)}`, { method: 'DELETE' });
-  if (!resp.ok) throw new Error('Failed to remove device');
+  if (!resp.ok) throw new Error(t('txt_remove_device_failed'));
+}
+
+export async function deleteAllAuthorizedDevices(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>
+): Promise<void> {
+  const resp = await authedFetch('/api/devices', { method: 'DELETE' });
+  if (!resp.ok) throw new Error(t('txt_remove_all_devices_failed'));
 }
 
 export async function listAdminUsers(authedFetch: (input: string, init?: RequestInit) => Promise<Response>): Promise<AdminUser[]> {
@@ -962,7 +974,7 @@ async function normalizeFido2Credentials(
   ,
   enc: Uint8Array,
   mac: Uint8Array
-): Array<Record<string, unknown>> | null {
+): Promise<Array<Record<string, unknown>> | null> {
   if (!Array.isArray(credentials) || credentials.length === 0) return null;
   const out: Array<Record<string, unknown>> = [];
   for (const credential of credentials) {

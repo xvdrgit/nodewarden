@@ -1,7 +1,9 @@
 import { Env } from '../types';
+import { getOnlineUserDevices, notifyUserLogout } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
 import { errorResponse, jsonResponse } from '../utils/response';
 import { readKnownDeviceProbe } from '../utils/device';
+import { generateUUID } from '../utils/uuid';
 
 // GET /api/devices/knowndevice
 // Compatible with Bitwarden/Vaultwarden behavior:
@@ -45,10 +47,12 @@ export async function handleGetDevices(request: Request, env: Env, userId: strin
 export async function handleGetAuthorizedDevices(request: Request, env: Env, userId: string): Promise<Response> {
   void request;
   const storage = new StorageService(env.DB);
-  const [devices, trusted] = await Promise.all([
+  const [devices, trusted, onlineDeviceIdentifiers] = await Promise.all([
     storage.getDevicesByUserId(userId),
     storage.getTrustedDeviceTokenSummariesByUserId(userId),
+    getOnlineUserDevices(env, userId),
   ]);
+  const onlineSet = new Set(onlineDeviceIdentifiers);
 
   const trustedByIdentifier = new Map<string, { expiresAt: number; tokenCount: number }>();
   for (const row of trusted) {
@@ -66,6 +70,7 @@ export async function handleGetAuthorizedDevices(request: Request, env: Env, use
       type: device.type,
       creationDate: device.createdAt,
       revisionDate: device.updatedAt,
+      online: onlineSet.has(device.deviceIdentifier),
       trusted: !!trustedInfo,
       trustedTokenCount: trustedInfo?.tokenCount || 0,
       trustedUntil: trustedInfo?.expiresAt ? new Date(trustedInfo.expiresAt).toISOString() : null,
@@ -82,6 +87,7 @@ export async function handleGetAuthorizedDevices(request: Request, env: Env, use
       type: 14,
       creationDate: '',
       revisionDate: '',
+      online: onlineSet.has(row.deviceIdentifier),
       trusted: true,
       trustedTokenCount: row.tokenCount,
       trustedUntil: row.expiresAt ? new Date(row.expiresAt).toISOString() : null,
@@ -133,8 +139,31 @@ export async function handleDeleteDevice(
 
   const storage = new StorageService(env.DB);
   await storage.deleteTrustedTwoFactorTokensByDevice(userId, normalized);
+  await storage.deleteRefreshTokensByDevice(userId, normalized);
   const deleted = await storage.deleteDevice(userId, normalized);
+  if (deleted) {
+    await notifyUserLogout(env, userId, normalized);
+  }
   return jsonResponse({ success: deleted });
+}
+
+// DELETE /api/devices
+export async function handleDeleteAllDevices(request: Request, env: Env, userId: string): Promise<Response> {
+  void request;
+  const storage = new StorageService(env.DB);
+  const user = await storage.getUserById(userId);
+  if (!user) return errorResponse('User not found', 404);
+
+  const [removedTrusted, removedSessions, removedDevices] = await Promise.all([
+    storage.deleteTrustedTwoFactorTokensByUserId(userId),
+    storage.deleteRefreshTokensByUserId(userId),
+    storage.deleteDevicesByUserId(userId),
+  ]);
+  user.securityStamp = generateUUID();
+  user.updatedAt = new Date().toISOString();
+  await storage.saveUser(user);
+  await notifyUserLogout(env, userId, null);
+  return jsonResponse({ success: true, removedTrusted, removedSessions: removedSessions ?? 0, removedDevices });
 }
 
 // PUT /api/devices/identifier/{deviceIdentifier}/token

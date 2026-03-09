@@ -1,10 +1,12 @@
 import { Env, Attachment, DEFAULT_DEV_SECRET } from '../types';
+import { notifyUserVaultSync } from '../durable/notifications-hub';
 import { StorageService } from '../services/storage';
 import { jsonResponse, errorResponse } from '../utils/response';
 import { generateUUID } from '../utils/uuid';
 import { createFileDownloadToken, verifyFileDownloadToken } from '../utils/jwt';
 import { cipherToResponse, shouldOmitPasskeysForResponse } from './ciphers';
 import { LIMITS } from '../config/limits';
+import { readActingDeviceIdentifier } from '../utils/device';
 import {
   deleteBlobObject,
   getAttachmentObjectKey,
@@ -12,6 +14,15 @@ import {
   getBlobStorageMaxBytes,
   putBlobObject,
 } from '../services/blob-store';
+
+async function notifyVaultSyncForRequest(
+  request: Request,
+  env: Env,
+  userId: string,
+  revisionDate: string
+): Promise<void> {
+  await notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+}
 
 // Format file size to human readable
 function formatSize(bytes: number): string {
@@ -73,7 +84,10 @@ export async function handleCreateAttachment(
   await storage.addAttachmentToCipher(cipherId, attachmentId);
 
   // Update cipher revision date
-  await storage.updateCipherRevisionDate(cipherId);
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  if (revisionInfo) {
+    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+  }
 
   // Get updated cipher for response
   const updatedCipher = await storage.getCipher(cipherId);
@@ -165,7 +179,10 @@ export async function handleUploadAttachment(
   }
 
   // Update cipher revision date
-  await storage.updateCipherRevisionDate(cipherId);
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  if (revisionInfo) {
+    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+  }
 
   return new Response(null, { status: 200 });
 }
@@ -304,7 +321,10 @@ export async function handleDeleteAttachment(
   await storage.removeAttachmentFromCipher(cipherId, attachmentId);
 
   // Update cipher revision date
-  await storage.updateCipherRevisionDate(cipherId);
+  const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
+  if (revisionInfo) {
+    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+  }
 
   // Get updated cipher for response
   const updatedCipher = await storage.getCipher(cipherId);
