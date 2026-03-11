@@ -518,3 +518,26 @@ export async function handleBulkMoveCiphers(request: Request, env: Env, userId: 
 
   return new Response(null, { status: 204 });
 }
+
+// POST /api/ciphers/delete - Bulk soft delete
+export async function handleBulkDeleteCiphers(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+
+  let body: { ids?: string[] };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  if (!body.ids || !Array.isArray(body.ids)) {
+    return errorResponse('ids array is required', 400);
+  }
+
+  const revisionDate = await storage.bulkSoftDeleteCiphers(body.ids, userId);
+  if (revisionDate) {
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
+  }
+
+  return new Response(null, { status: 204 });
+}

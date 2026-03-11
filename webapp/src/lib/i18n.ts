@@ -141,11 +141,6 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_enter_master_password_to_view_this_item: "Enter master password to view this item.",
     txt_expiration_date: "Expiration Date",
     txt_expiration_days_0_never: "Expiration Days (0 = never)",
-    txt_exposed: "Exposed",
-    txt_exposed_password_check_complete_count: "{count} exposed password(s) found",
-    txt_exposed_ignored: "Exposed (Ignored)",
-    txt_exposed_passwords: "Exposed Passwords",
-    txt_exposed_short: "Exposed",
     txt_expires_at: "Expires At",
     txt_expires_at_value: "Expires at: {value}",
     txt_expiry: "Expiry",
@@ -256,7 +251,6 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_no: "No",
     txt_no_devices_found: "No devices found.",
     txt_no_folder: "No Folder",
-    txt_no_exposed_passwords_found: "No exposed passwords found",
     txt_no_items: "No items",
     txt_no_username: "(No username)",
     txt_no_verification_codes: "No verification codes",
@@ -300,7 +294,6 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_regenerate: "Regenerate",
     txt_registration_succeeded_please_sign_in: "Registration succeeded. Please sign in.",
     txt_remove: "Remove",
-    txt_ignore: "Ignore",
     txt_remove_device: "Remove device",
     txt_remove_device_2: "Remove Device",
     txt_remove_all_devices: "Remove all devices",
@@ -392,7 +385,6 @@ const messages: Record<Locale, Record<string, string>> = {
     txt_unlock_item: "Unlock Item",
     txt_unlock_send: "Unlock Send",
     txt_unlock_vault: "Unlock Vault",
-    txt_unignore: "Unignore",
     txt_unlocked: "Unlocked",
     txt_all_devices_removed: "All devices removed",
     txt_remove_device_failed: "Failed to remove device",
@@ -454,7 +446,6 @@ const zhCNOverrides: Record<string, string> = {
   txt_back_to_login: '返回登录',
   txt_unlock: '解锁',
   txt_unlock_vault: '解锁密码库',
-  txt_unignore: '取消忽略',
   txt_master_password: '主密码',
   txt_email: '邮箱',
   txt_name: '名称',
@@ -481,7 +472,6 @@ const zhCNOverrides: Record<string, string> = {
   txt_copy: '复制',
   txt_code_copied: '验证码已复制',
   txt_copy_link: '复制链接',
-  txt_ignore: '忽略',
   txt_select_all: '全选',
   txt_delete_selected: '删除所选',
   txt_all_items: '所有项目',
@@ -490,7 +480,6 @@ const zhCNOverrides: Record<string, string> = {
   txt_folder: '文件夹',
   txt_folders: '文件夹',
   txt_no_folder: '无文件夹',
-  txt_no_exposed_passwords_found: '未发现已泄露密码',
   txt_no_items: '没有项目',
   txt_no_username: '无用户名',
   txt_no_verification_codes: '没有验证码',
@@ -498,11 +487,6 @@ const zhCNOverrides: Record<string, string> = {
   txt_select_an_item: '请选择一个项目',
   txt_login: '登录',
   txt_card: '银行卡',
-  txt_exposed: '已泄露',
-  txt_exposed_password_check_complete_count: '发现 {count} 个已泄露密码',
-  txt_exposed_ignored: '已泄露（已忽略）',
-  txt_exposed_passwords: '是否泄露',
-  txt_exposed_short: '泄露',
   txt_identity: '身份',
   txt_note: '笔记',
   txt_secure_note: '安全笔记',
@@ -883,9 +867,13 @@ messages.en.txt_new_type_header = 'New {type}';
 messages.en.txt_edit_type_header = 'Edit {type}';
 messages.en.txt_delete_folder = 'Delete Folder';
 messages.en.txt_delete_folder_message = 'Delete folder "{name}"? Items inside will move to No Folder.';
+messages.en.txt_delete_all_folders = 'Delete All Folders';
+messages.en.txt_delete_all_folders_message = 'Delete all folders? Items inside will move to No Folder.';
 messages.en.txt_folder_not_found = 'Folder not found';
 messages.en.txt_folder_deleted = 'Folder deleted';
+messages.en.txt_folders_deleted = 'Folders deleted';
 messages.en.txt_delete_folder_failed = 'Delete folder failed';
+messages.en.txt_delete_all_folders_failed = 'Delete all folders failed';
 messages.en.txt_other = 'Other';
 messages.en.txt_vault_key_unavailable = 'Vault key unavailable. Please unlock vault and try again.';
 messages.en.txt_vault_not_ready = 'Vault is not ready yet';
@@ -945,9 +933,13 @@ zhCNOverrides.txt_new_type_header = '新建{type}';
 zhCNOverrides.txt_edit_type_header = '编辑{type}';
 zhCNOverrides.txt_delete_folder = '删除文件夹';
 zhCNOverrides.txt_delete_folder_message = '删除文件夹「{name}」？其中的项目将移至无文件夹。';
+zhCNOverrides.txt_delete_all_folders = '删除全部文件夹';
+zhCNOverrides.txt_delete_all_folders_message = '确认删除全部文件夹吗？其中的项目将移至无文件夹。';
 zhCNOverrides.txt_folder_not_found = '文件夹不存在';
 zhCNOverrides.txt_folder_deleted = '文件夹已删除';
+zhCNOverrides.txt_folders_deleted = '文件夹已删除';
 zhCNOverrides.txt_delete_folder_failed = '删除文件夹失败';
+zhCNOverrides.txt_delete_all_folders_failed = '删除全部文件夹失败';
 zhCNOverrides.txt_other = '其他';
 zhCNOverrides.txt_vault_key_unavailable = '账户密钥不可用，请先解锁密码库后重试。';
 zhCNOverrides.txt_vault_not_ready = '密码库数据尚未就绪';

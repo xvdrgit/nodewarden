@@ -1025,6 +1025,39 @@ export async function handleDeleteSend(request: Request, env: Env, userId: strin
   return new Response(null, { status: 200 });
 }
 
+// POST /api/sends/delete - Bulk delete
+export async function handleBulkDeleteSends(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+
+  let body: { ids?: string[] };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  if (!body.ids || !Array.isArray(body.ids)) {
+    return errorResponse('ids array is required', 400);
+  }
+
+  const sends = await storage.getSendsByIds(body.ids, userId);
+  for (const send of sends) {
+    if (send.type !== SendType.File) continue;
+    const data = parseStoredSendData(send);
+    const fileId = typeof data.id === 'string' ? data.id : null;
+    if (fileId) {
+      await deleteBlobObject(env, getSendFileObjectKey(send.id, fileId));
+    }
+  }
+
+  const revisionDate = await storage.bulkDeleteSends(body.ids, userId);
+  if (revisionDate) {
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
+  }
+
+  return new Response(null, { status: 200 });
+}
+
 // PUT /api/sends/:id/remove-password
 export async function handleRemoveSendPassword(request: Request, env: Env, userId: string, sendId: string): Promise<Response> {
   void request;

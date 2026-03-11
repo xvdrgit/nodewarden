@@ -1,7 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { calcTotpNow } from '@/lib/crypto';
-import { checkCipherPasswordsExposed } from '@/lib/password-breach';
 import { computeSshFingerprint, generateDefaultSshKeyMaterial } from '@/lib/ssh';
 import {
   ArrowUpDown,
@@ -26,7 +25,6 @@ import {
   Pencil,
   Plus,
   RefreshCw,
-  ShieldAlert,
   ShieldUser,
   Star,
   StarOff,
@@ -53,6 +51,7 @@ interface VaultPageProps {
   onNotify: (type: 'success' | 'error' | 'warning', text: string) => void;
   onCreateFolder: (name: string) => Promise<void>;
   onDeleteFolder: (folderId: string) => Promise<void>;
+  onBulkDeleteFolders: (folderIds: string[]) => Promise<void>;
   onDownloadAttachment: (cipher: Cipher, attachmentId: string) => Promise<void>;
 }
 
@@ -61,7 +60,6 @@ type VaultSortMode = 'edited' | 'created' | 'name';
 type SidebarFilter =
   | { kind: 'all' }
   | { kind: 'favorite' }
-  | { kind: 'exposed' }
   | { kind: 'trash' }
   | { kind: 'type'; value: TypeFilter }
   | { kind: 'folder'; folderId: string | null };
@@ -80,9 +78,9 @@ const CREATE_TYPE_OPTIONS: TypeOption[] = [
 ];
 
 const VAULT_SORT_STORAGE_KEY = 'nodewarden.vault.sort.v1';
-const VAULT_EXPOSED_IGNORED_STORAGE_KEY = 'nodewarden.vault.exposed-ignored.v1';
-const VAULT_EXPOSED_SIGNATURE_STORAGE_KEY = 'nodewarden.vault.exposed-signature.v1';
 const MOBILE_LAYOUT_QUERY = '(max-width: 900px)';
+const VAULT_LIST_ROW_HEIGHT = 66;
+const VAULT_LIST_OVERSCAN = 10;
 const VAULT_SORT_OPTIONS: Array<{ value: VaultSortMode; label: string }> = [
   { value: 'edited', label: t('txt_sort_last_edited') },
   { value: 'created', label: t('txt_sort_created') },
@@ -336,11 +334,12 @@ function firstPasskeyCreationTime(cipher: Cipher | null): string | null {
 const TOTP_PERIOD_SECONDS = 30;
 const TOTP_RING_RADIUS = 14;
 const TOTP_RING_CIRCUMFERENCE = 2 * Math.PI * TOTP_RING_RADIUS;
+const failedIconHosts = new Set<string>();
 
 function VaultListIcon({ cipher }: { cipher: Cipher }) {
   const uri = firstCipherUri(cipher);
   const host = hostFromUri(uri);
-  const [errored, setErrored] = useState(false);
+  const [errored, setErrored] = useState(() => (host ? failedIconHosts.has(host) : false));
   if (host && !errored) {
     return (
       <img
@@ -348,7 +347,10 @@ function VaultListIcon({ cipher }: { cipher: Cipher }) {
         src={`/icons/${host}/icon.png?v=2`}
         alt=""
         loading="lazy"
-        onError={() => setErrored(true)}
+        onError={() => {
+          failedIconHosts.add(host);
+          setErrored(true);
+        }}
       />
     );
   }
@@ -371,43 +373,12 @@ function openUri(raw: string): void {
   window.open(url, '_blank', 'noopener');
 }
 
-async function computePasswordSignature(ciphers: Cipher[]): Promise<string> {
-  const parts = ciphers
-    .filter((cipher) => Number(cipher.type || 1) === 1)
-    .map((cipher) => `${String(cipher.id || '').trim()}\u0000${String(cipher.login?.decPassword || '')}`)
-    .sort();
-  const bytes = new TextEncoder().encode(parts.join('\u0001'));
-  const digest = await crypto.subtle.digest('SHA-256', bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function countVisibleExposed(results: Record<string, boolean>, ignoredMap: Record<string, boolean>): number {
-  let count = 0;
-  for (const [cipherId, exposed] of Object.entries(results)) {
-    if (exposed && !ignoredMap[cipherId]) count++;
-  }
-  return count;
-}
-
-function readIgnoredExposedMap(): Record<string, boolean> {
-  try {
-    const raw = localStorage.getItem(VAULT_EXPOSED_IGNORED_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Record<string, boolean>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
 export default function VaultPage(props: VaultPageProps) {
   const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchComposing, setSearchComposing] = useState(false);
   const [sortMode, setSortMode] = useState<VaultSortMode>('edited');
   const [sortMenuOpen, setSortMenuOpen] = useState(false);
-  const [exposedStatusMap, setExposedStatusMap] = useState<Record<string, boolean>>({});
-  const [ignoredExposedMap, setIgnoredExposedMap] = useState<Record<string, boolean>>(() => readIgnoredExposedMap());
   const [sidebarFilter, setSidebarFilter] = useState<SidebarFilter>({ kind: 'all' });
   const [selectedCipherId, setSelectedCipherId] = useState('');
   const [selectedMap, setSelectedMap] = useState<Record<string, boolean>>({});
@@ -428,6 +399,7 @@ export default function VaultPage(props: VaultPageProps) {
   const [createFolderOpen, setCreateFolderOpen] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
   const [pendingDeleteFolder, setPendingDeleteFolder] = useState<Folder | null>(null);
+  const [deleteAllFoldersOpen, setDeleteAllFoldersOpen] = useState(false);
   const [totpLive, setTotpLive] = useState<{ code: string; remain: number } | null>(null);
   const [hiddenFieldVisibleMap, setHiddenFieldVisibleMap] = useState<Record<number, boolean>>({});
   const [attachmentQueue, setAttachmentQueue] = useState<File[]>([]);
@@ -442,13 +414,11 @@ export default function VaultPage(props: VaultPageProps) {
   const createMenuRef = useRef<HTMLDivElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const listPanelRef = useRef<HTMLDivElement | null>(null);
   const sshSeedTicketRef = useRef(0);
   const sshFingerprintTicketRef = useRef(0);
-  const hasCompletedAutoExposureCheckRef = useRef(false);
-
-  function isVisibleExposed(cipherId: string): boolean {
-    return !!exposedStatusMap[cipherId] && !ignoredExposedMap[cipherId];
-  }
+  const [listScrollTop, setListScrollTop] = useState(0);
+  const [listViewportHeight, setListViewportHeight] = useState(0);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
@@ -499,57 +469,14 @@ export default function VaultPage(props: VaultPageProps) {
   }, [sortMode]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(VAULT_EXPOSED_IGNORED_STORAGE_KEY, JSON.stringify(ignoredExposedMap));
-    } catch {
-      // ignore storage write failures
-    }
-  }, [ignoredExposedMap]);
-
-  useEffect(() => {
-    if (props.loading) return;
-
-    const loginCiphers = props.ciphers.filter(
-      (cipher) => Number(cipher.type || 1) === 1 && !!String(cipher.login?.decPassword || '').trim()
-    );
-
-    let cancelled = false;
-
-    void (async () => {
-      try {
-        const [signature, results] = await Promise.all([
-          computePasswordSignature(loginCiphers),
-          checkCipherPasswordsExposed(loginCiphers),
-        ]);
-        if (cancelled) return;
-
-        setExposedStatusMap(results);
-
-        const previousSignature =
-          typeof localStorage !== 'undefined'
-            ? String(localStorage.getItem(VAULT_EXPOSED_SIGNATURE_STORAGE_KEY) || '').trim()
-            : '';
-
-        if (typeof localStorage !== 'undefined') {
-          localStorage.setItem(VAULT_EXPOSED_SIGNATURE_STORAGE_KEY, signature);
-        }
-
-        if (hasCompletedAutoExposureCheckRef.current && previousSignature && previousSignature !== signature) {
-          const count = countVisibleExposed(results, ignoredExposedMap);
-          if (count > 0) {
-            props.onNotify('warning', t('txt_exposed_password_check_complete_count', { count }));
-          }
-        }
-        hasCompletedAutoExposureCheckRef.current = true;
-      } catch {
-        // Keep exposed-password checks silent in the background.
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [props.ciphers, props.loading]);
+    const node = listPanelRef.current;
+    if (!node) return;
+    const updateSize = () => setListViewportHeight(node.clientHeight || 0);
+    updateSize();
+    const resizeObserver = new ResizeObserver(updateSize);
+    resizeObserver.observe(node);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
     const onPointerDown = (event: Event) => {
@@ -627,7 +554,6 @@ export default function VaultPage(props: VaultPageProps) {
       } else {
         if (isDeleted) return false;
         if (sidebarFilter.kind === 'favorite' && !cipher.favorite) return false;
-        if (sidebarFilter.kind === 'exposed' && !isVisibleExposed(cipher.id)) return false;
         if (sidebarFilter.kind === 'type' && cipherTypeKey(Number(cipher.type || 1)) !== sidebarFilter.value) return false;
         if (sidebarFilter.kind === 'folder') {
           if (sidebarFilter.folderId === null) {
@@ -663,7 +589,18 @@ export default function VaultPage(props: VaultPageProps) {
     });
 
     return next;
-  }, [props.ciphers, sidebarFilter, searchQuery, sortMode, exposedStatusMap, ignoredExposedMap]);
+  }, [props.ciphers, sidebarFilter, searchQuery, sortMode]);
+
+  const sidebarFilterKey = useMemo(() => {
+    if (sidebarFilter.kind === 'folder') return `folder:${sidebarFilter.folderId ?? 'none'}`;
+    if (sidebarFilter.kind === 'type') return `type:${sidebarFilter.value}`;
+    return sidebarFilter.kind;
+  }, [sidebarFilter]);
+
+  useEffect(() => {
+    setListScrollTop(0);
+    listPanelRef.current?.scrollTo({ top: 0 });
+  }, [searchQuery, sortMode, sidebarFilterKey]);
 
   useEffect(() => {
     if (isCreating) return;
@@ -680,8 +617,25 @@ export default function VaultPage(props: VaultPageProps) {
     () => props.ciphers.find((x) => x.id === selectedCipherId) || null,
     [props.ciphers, selectedCipherId]
   );
-  const selectedCipherExposed = !!(selectedCipher && exposedStatusMap[selectedCipher.id]);
-  const selectedCipherIgnored = !!(selectedCipher && ignoredExposedMap[selectedCipher.id]);
+  const virtualRange = useMemo(() => {
+    if (!filteredCiphers.length) {
+      return { start: 0, end: 0, padTop: 0, padBottom: 0 };
+    }
+    const viewport = Math.max(listViewportHeight, VAULT_LIST_ROW_HEIGHT * 8);
+    const visibleCount = Math.ceil(viewport / VAULT_LIST_ROW_HEIGHT);
+    const start = Math.max(0, Math.floor(listScrollTop / VAULT_LIST_ROW_HEIGHT) - VAULT_LIST_OVERSCAN);
+    const end = Math.min(filteredCiphers.length, start + visibleCount + VAULT_LIST_OVERSCAN * 2);
+    return {
+      start,
+      end,
+      padTop: start * VAULT_LIST_ROW_HEIGHT,
+      padBottom: Math.max(0, (filteredCiphers.length - end) * VAULT_LIST_ROW_HEIGHT),
+    };
+  }, [filteredCiphers.length, listScrollTop, listViewportHeight]);
+  const visibleCiphers = useMemo(
+    () => filteredCiphers.slice(virtualRange.start, virtualRange.end),
+    [filteredCiphers, virtualRange.start, virtualRange.end]
+  );
   const passkeyCreatedAt = firstPasskeyCreationTime(selectedCipher);
   const selectedAttachments = useMemo(
     () => (Array.isArray(selectedCipher?.attachments) ? selectedCipher.attachments : []),
@@ -885,26 +839,11 @@ function folderName(id: string | null | undefined): string {
       if (isCreating) {
         await props.onCreate(nextDraft, attachmentQueue);
       } else if (selectedCipher) {
-        const passwordChanged =
-          nextDraft.type === 1 &&
-          String(nextDraft.loginPassword || '') !== String(selectedCipher.login?.decPassword || '');
         const removeAttachmentIds = Object.keys(removedAttachmentIds).filter((id) => !!removedAttachmentIds[id]);
         await props.onUpdate(selectedCipher, nextDraft, {
           addFiles: attachmentQueue,
           removeAttachmentIds,
         });
-        if (passwordChanged) {
-          setExposedStatusMap((prev) => {
-            const next = { ...prev };
-            delete next[selectedCipher.id];
-            return next;
-          });
-          setIgnoredExposedMap((prev) => {
-            const next = { ...prev };
-            delete next[selectedCipher.id];
-            return next;
-          });
-        }
       }
       setIsCreating(false);
       setIsEditing(false);
@@ -971,15 +910,6 @@ function folderName(id: string | null | undefined): string {
     }
   }
 
-  function toggleIgnoreExposed(cipherId: string): void {
-    setIgnoredExposedMap((prev) => {
-      const next = { ...prev };
-      if (next[cipherId]) delete next[cipherId];
-      else next[cipherId] = true;
-      return next;
-    });
-  }
-
   async function verifyReprompt(): Promise<void> {
     if (!selectedCipher) return;
     if (!repromptPassword) {
@@ -1028,6 +958,20 @@ function folderName(id: string | null | undefined): string {
     }
   }
 
+  async function confirmDeleteAllFolders(): Promise<void> {
+    if (!props.folders.length) return;
+    setBusy(true);
+    try {
+      await props.onBulkDeleteFolders(props.folders.map((folder) => folder.id));
+      if (sidebarFilter.kind === 'folder') {
+        setSidebarFilter({ kind: 'all' });
+      }
+      setDeleteAllFoldersOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <>
       <div className={`vault-grid ${isMobileLayout ? `mobile-panel-${mobilePanel}` : ''}`}>
@@ -1047,9 +991,6 @@ function folderName(id: string | null | undefined): string {
             </button>
             <button type="button" className={`tree-btn ${sidebarFilter.kind === 'favorite' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'favorite' })}>
               <Star size={14} className="tree-icon" /> <span className="tree-label">{t('txt_favorites')}</span>
-            </button>
-            <button type="button" className={`tree-btn ${sidebarFilter.kind === 'exposed' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'exposed' })}>
-              <ShieldAlert size={14} className="tree-icon" /> <span className="tree-label">{t('txt_exposed_passwords')}</span>
             </button>
             <button type="button" className={`tree-btn ${sidebarFilter.kind === 'trash' ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'trash' })}>
               <Trash2 size={14} className="tree-icon" /> <span className="tree-label">{t('txt_trash')}</span>
@@ -1078,9 +1019,21 @@ function folderName(id: string | null | undefined): string {
           <div className="sidebar-block">
             <div className="sidebar-title-row">
               <div className="sidebar-title">{t('txt_folders')}</div>
-              <button type="button" className="folder-add-btn" onClick={() => setCreateFolderOpen(true)}>
-                <FolderPlus size={14} />
-              </button>
+              <div className="folder-title-actions">
+                <button
+                  type="button"
+                  className="folder-delete-btn"
+                  title={t('txt_delete_all_folders')}
+                  aria-label={t('txt_delete_all_folders')}
+                  disabled={busy || props.folders.length === 0}
+                  onClick={() => setDeleteAllFoldersOpen(true)}
+                >
+                  <X size={14} />
+                </button>
+                <button type="button" className="folder-add-btn" onClick={() => setCreateFolderOpen(true)}>
+                  <FolderPlus size={14} />
+                </button>
+              </div>
             </div>
             <button type="button" className={`tree-btn ${sidebarFilter.kind === 'folder' && sidebarFilter.folderId === null ? 'active' : ''}`} onClick={() => setSidebarFilter({ kind: 'folder', folderId: null })}>
               <FolderX size={14} className="tree-icon" /> <span className="tree-label">{t('txt_no_folder')}</span>
@@ -1219,8 +1172,14 @@ function folderName(id: string | null | undefined): string {
             )}
           </div>
 
-          <div className="list-panel">
-            {filteredCiphers.map((cipher) => (
+          <div
+            className="list-panel"
+            ref={listPanelRef}
+            onScroll={(event) => setListScrollTop((event.currentTarget as HTMLDivElement).scrollTop)}
+          >
+            {!!filteredCiphers.length && (
+              <div style={{ paddingTop: `${virtualRange.padTop}px`, paddingBottom: `${virtualRange.padBottom}px` }}>
+                {visibleCiphers.map((cipher) => (
               <div key={cipher.id} className={`list-item ${selectedCipherId === cipher.id ? 'active' : ''}`}>
                 <input
                   type="checkbox"
@@ -1252,13 +1211,14 @@ function folderName(id: string | null | undefined): string {
                   <div className="list-text">
                     <span className="list-title" title={cipher.decName || t('txt_no_name')}>
                       <span className="list-title-text">{cipher.decName || t('txt_no_name')}</span>
-                      {isVisibleExposed(cipher.id) ? <span className="list-badge danger">{t('txt_exposed_short')}</span> : null}
                     </span>
                     <span className="list-sub" title={listSubtitle(cipher)}>{listSubtitle(cipher)}</span>
                   </div>
                 </button>
               </div>
-            ))}
+                ))}
+              </div>
+            )}
             {!filteredCiphers.length && <div className="empty">{t('txt_no_items')}</div>}
           </div>
         </section>
@@ -1678,25 +1638,6 @@ function folderName(id: string | null | undefined): string {
                       </button>
                     </div>
                   </div>
-                  {selectedCipherExposed && (
-                    <div className="kv-row">
-                      <span className="kv-label">{t('txt_exposed_passwords')}</span>
-                      <div className="kv-main">
-                        <strong className="exposed-status danger">
-                          {selectedCipherIgnored ? t('txt_exposed_ignored') : t('txt_exposed')}
-                        </strong>
-                      </div>
-                      <div className="kv-actions">
-                        <button
-                          type="button"
-                          className="btn btn-secondary small"
-                          onClick={() => toggleIgnoreExposed(selectedCipher.id)}
-                        >
-                          <X size={14} className="btn-icon" /> {selectedCipherIgnored ? t('txt_unignore') : t('txt_ignore')}
-                        </button>
-                      </div>
-                    </div>
-                  )}
                   {!!selectedCipher.login.decTotp && (
                     <div className="kv-row">
                       <span className="kv-label">{t('txt_totp')}</span>
@@ -2084,6 +2025,17 @@ function folderName(id: string | null | undefined): string {
         danger
         onConfirm={() => void confirmDeleteFolder()}
         onCancel={() => setPendingDeleteFolder(null)}
+      />
+
+      <ConfirmDialog
+        open={deleteAllFoldersOpen}
+        title={t('txt_delete_all_folders')}
+        message={t('txt_delete_all_folders_message')}
+        confirmText={t('txt_delete')}
+        cancelText={t('txt_cancel')}
+        danger
+        onConfirm={() => void confirmDeleteAllFolders()}
+        onCancel={() => setDeleteAllFoldersOpen(false)}
       />
 
       <ConfirmDialog

@@ -373,6 +373,13 @@ export async function createFolder(
   return { id: body.id, name: body.name ?? null };
 }
 
+export async function encryptFolderImportName(session: SessionState, name: string): Promise<string> {
+  if (!session.symEncKey || !session.symMacKey) throw new Error('Vault key unavailable');
+  const enc = base64ToBytes(session.symEncKey);
+  const mac = base64ToBytes(session.symMacKey);
+  return encryptBw(new TextEncoder().encode(name), enc, mac);
+}
+
 export async function deleteFolder(
   authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
   folderId: string
@@ -383,6 +390,18 @@ export async function deleteFolder(
     method: 'DELETE',
   });
   if (!resp.ok) throw new Error('Delete folder failed');
+}
+
+export async function bulkDeleteFolders(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  ids: string[]
+): Promise<void> {
+  const resp = await authedFetch('/api/folders/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!resp.ok) throw new Error('Bulk delete folders failed');
 }
 
 export async function updateFolder(
@@ -1010,111 +1029,21 @@ async function getCipherKeys(cipher: Cipher | null, userEnc: Uint8Array, userMac
   return { enc: userEnc, mac: userMac, key: null };
 }
 
-export async function createCipher(
-  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+async function buildCipherPayload(
   session: SessionState,
-  draft: VaultDraft
-): Promise<{ id: string }> {
-  if (!session.symEncKey || !session.symMacKey) throw new Error('Vault key unavailable');
-  const enc = base64ToBytes(session.symEncKey);
-  const mac = base64ToBytes(session.symMacKey);
-  const type = Number(draft.type || 1);
-
-  const payload: Record<string, unknown> = {
-    type,
-    favorite: !!draft.favorite,
-    folderId: asNullable(draft.folderId),
-    reprompt: draft.reprompt ? 1 : 0,
-    name: await encryptTextValue(draft.name, enc, mac),
-    notes: await encryptTextValue(draft.notes, enc, mac),
-    login: null,
-    card: null,
-    identity: null,
-    secureNote: null,
-    sshKey: null,
-    fields: await encryptCustomFields(draft.customFields || [], enc, mac),
-  };
-
-  if (type === 1) {
-    payload.login = {
-      username: await encryptTextValue(draft.loginUsername, enc, mac),
-      password: await encryptTextValue(draft.loginPassword, enc, mac),
-      totp: await encryptTextValue(draft.loginTotp, enc, mac),
-      fido2Credentials: await normalizeFido2Credentials(draft.loginFido2Credentials, enc, mac),
-      uris: await encryptUris(draft.loginUris || [], enc, mac),
-    };
-  } else if (type === 3) {
-    payload.card = {
-      cardholderName: await encryptTextValue(draft.cardholderName, enc, mac),
-      number: await encryptTextValue(draft.cardNumber, enc, mac),
-      brand: await encryptTextValue(draft.cardBrand, enc, mac),
-      expMonth: await encryptTextValue(draft.cardExpMonth, enc, mac),
-      expYear: await encryptTextValue(draft.cardExpYear, enc, mac),
-      code: await encryptTextValue(draft.cardCode, enc, mac),
-    };
-  } else if (type === 4) {
-    payload.identity = {
-      title: await encryptTextValue(draft.identTitle, enc, mac),
-      firstName: await encryptTextValue(draft.identFirstName, enc, mac),
-      middleName: await encryptTextValue(draft.identMiddleName, enc, mac),
-      lastName: await encryptTextValue(draft.identLastName, enc, mac),
-      username: await encryptTextValue(draft.identUsername, enc, mac),
-      company: await encryptTextValue(draft.identCompany, enc, mac),
-      ssn: await encryptTextValue(draft.identSsn, enc, mac),
-      passportNumber: await encryptTextValue(draft.identPassportNumber, enc, mac),
-      licenseNumber: await encryptTextValue(draft.identLicenseNumber, enc, mac),
-      email: await encryptTextValue(draft.identEmail, enc, mac),
-      phone: await encryptTextValue(draft.identPhone, enc, mac),
-      address1: await encryptTextValue(draft.identAddress1, enc, mac),
-      address2: await encryptTextValue(draft.identAddress2, enc, mac),
-      address3: await encryptTextValue(draft.identAddress3, enc, mac),
-      city: await encryptTextValue(draft.identCity, enc, mac),
-      state: await encryptTextValue(draft.identState, enc, mac),
-      postalCode: await encryptTextValue(draft.identPostalCode, enc, mac),
-      country: await encryptTextValue(draft.identCountry, enc, mac),
-    };
-  } else if (type === 5) {
-    const encryptedFingerprint = await encryptTextValue(draft.sshFingerprint, enc, mac);
-    payload.sshKey = {
-      privateKey: await encryptTextValue(draft.sshPrivateKey, enc, mac),
-      publicKey: await encryptTextValue(draft.sshPublicKey, enc, mac),
-      keyFingerprint: encryptedFingerprint,
-      // Keep legacy alias for backward compatibility with previously exported/edited items.
-      fingerprint: encryptedFingerprint,
-    };
-  } else if (type === 2) {
-    payload.secureNote = { type: 0 };
-  }
-
-  const resp = await authedFetch('/api/ciphers', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!resp.ok) throw new Error('Create item failed');
-  const body = await parseJson<{ id?: string }>(resp);
-  if (!body?.id) throw new Error('Create item failed');
-  return { id: body.id };
-}
-
-export async function updateCipher(
-  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
-  session: SessionState,
-  cipher: Cipher,
-  draft: VaultDraft
-): Promise<void> {
+  draft: VaultDraft,
+  cipher: Cipher | null
+): Promise<Record<string, unknown>> {
   if (!session.symEncKey || !session.symMacKey) throw new Error('Vault key unavailable');
   const userEnc = base64ToBytes(session.symEncKey);
   const userMac = base64ToBytes(session.symMacKey);
   const keys = await getCipherKeys(cipher, userEnc, userMac);
-  const type = Number(draft.type || cipher.type || 1);
+  const type = Number(draft.type || cipher?.type || 1);
 
   const payload: Record<string, unknown> = {
-    id: cipher.id,
     type,
-    key: keys.key,
-    folderId: asNullable(draft.folderId),
     favorite: !!draft.favorite,
+    folderId: asNullable(draft.folderId),
     reprompt: draft.reprompt ? 1 : 0,
     name: await encryptTextValue(draft.name, keys.enc, keys.mac),
     notes: await encryptTextValue(draft.notes, keys.enc, keys.mac),
@@ -1126,11 +1055,16 @@ export async function updateCipher(
     fields: await encryptCustomFields(draft.customFields || [], keys.enc, keys.mac),
   };
 
+  if (cipher?.id) {
+    payload.id = cipher.id;
+    payload.key = keys.key;
+  }
+
   if (type === 1) {
     const existingFido2 =
-      cipher.login && Array.isArray((cipher.login as any).fido2Credentials)
+      cipher?.login && Array.isArray((cipher.login as any).fido2Credentials)
         ? (cipher.login as any).fido2Credentials
-        : null;
+        : draft.loginFido2Credentials;
     payload.login = {
       username: await encryptTextValue(draft.loginUsername, keys.enc, keys.mac),
       password: await encryptTextValue(draft.loginPassword, keys.enc, keys.mac),
@@ -1174,12 +1108,47 @@ export async function updateCipher(
       privateKey: await encryptTextValue(draft.sshPrivateKey, keys.enc, keys.mac),
       publicKey: await encryptTextValue(draft.sshPublicKey, keys.enc, keys.mac),
       keyFingerprint: encryptedFingerprint,
-      // Keep legacy alias for backward compatibility with previously exported/edited items.
       fingerprint: encryptedFingerprint,
     };
   } else if (type === 2) {
     payload.secureNote = { type: 0 };
   }
+
+  return payload;
+}
+
+export async function buildCipherImportPayload(
+  session: SessionState,
+  draft: VaultDraft
+): Promise<Record<string, unknown>> {
+  return buildCipherPayload(session, draft, null);
+}
+
+export async function createCipher(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  session: SessionState,
+  draft: VaultDraft
+): Promise<{ id: string }> {
+  const payload = await buildCipherPayload(session, draft, null);
+
+  const resp = await authedFetch('/api/ciphers', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!resp.ok) throw new Error('Create item failed');
+  const body = await parseJson<{ id?: string }>(resp);
+  if (!body?.id) throw new Error('Create item failed');
+  return { id: body.id };
+}
+
+export async function updateCipher(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  session: SessionState,
+  cipher: Cipher,
+  draft: VaultDraft
+): Promise<void> {
+  const payload = await buildCipherPayload(session, draft, cipher);
 
   const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(cipher.id)}`, {
     method: 'PUT',
@@ -1195,6 +1164,18 @@ export async function deleteCipher(
 ): Promise<void> {
   const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(cipherId)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error('Delete item failed');
+}
+
+export async function bulkDeleteCiphers(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  ids: string[]
+): Promise<void> {
+  const resp = await authedFetch('/api/ciphers/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!resp.ok) throw new Error('Bulk delete failed');
 }
 
 export async function bulkMoveCiphers(
@@ -1429,6 +1410,18 @@ export async function deleteSend(
 ): Promise<void> {
   const resp = await authedFetch(`/api/sends/${encodeURIComponent(sendId)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Delete send failed'));
+}
+
+export async function bulkDeleteSends(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  ids: string[]
+): Promise<void> {
+  const resp = await authedFetch('/api/sends/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!resp.ok) throw new Error('Bulk delete sends failed');
 }
 
 async function buildPublicSendAccessPayload(password?: string, keyPart?: string | null): Promise<Record<string, unknown>> {

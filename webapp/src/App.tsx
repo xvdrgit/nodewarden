@@ -18,15 +18,20 @@ import ImportPage from '@/components/ImportPage';
 import TotpCodesPage from '@/components/TotpCodesPage';
 import type { ImportAttachmentFile, ImportResultSummary } from '@/components/ImportPage';
 import {
+  buildCipherImportPayload,
+  bulkDeleteFolders,
   changeMasterPassword,
   createFolder,
   updateFolder,
   deleteCipherAttachment,
   deleteFolder,
+  bulkDeleteCiphers,
+  bulkDeleteSends,
   createCipher,
   createAuthedFetch,
   createInvite,
   downloadCipherAttachmentDecrypted,
+  encryptFolderImportName,
   exportAdminBackup,
   importAdminBackup,
   importCiphers,
@@ -449,6 +454,14 @@ export default function App() {
         }
       ),
     [session, setupRegistered]
+  );
+  const importAuthedFetch = useMemo(
+    () => async (input: string, init?: RequestInit) => {
+      const headers = new Headers(init?.headers || {});
+      headers.set('X-NodeWarden-Import', '1');
+      return authedFetch(input, { ...init, headers });
+    },
+    [authedFetch]
   );
 
   useEffect(() => {
@@ -1208,9 +1221,7 @@ export default function App() {
 
   async function bulkDeleteVaultItems(ids: string[]) {
     try {
-      for (const id of ids) {
-        await deleteCipher(authedFetch, id);
-      }
+      await bulkDeleteCiphers(authedFetch, ids);
       await Promise.all([ciphersQuery.refetch(), foldersQuery.refetch()]);
       pushToast('success', t('txt_deleted_selected_items'));
     } catch (error) {
@@ -1287,9 +1298,7 @@ export default function App() {
 
   async function bulkDeleteSendItems(ids: string[]) {
     try {
-      for (const id of ids) {
-        await deleteSend(authedFetch, id);
-      }
+      await bulkDeleteSends(authedFetch, ids);
       await sendsQuery.refetch();
       pushToast('success', t('txt_deleted_selected_sends'));
     } catch (error) {
@@ -1336,18 +1345,17 @@ export default function App() {
     }
   }
 
-  function buildImportedCipherMaps(
-    payloadCiphers: Array<Record<string, unknown>>,
-    createdCipherIdsByIndex: Map<number, string>
-  ): { byIndex: Map<number, string>; bySourceId: Map<string, string> } {
-    const byIndex = new Map<number, string>(createdCipherIdsByIndex);
-    const bySourceId = new Map<string, string>();
-    for (const [index, id] of createdCipherIdsByIndex.entries()) {
-      const raw = (payloadCiphers[index] || {}) as Record<string, unknown>;
-      const sourceId = String(raw.id || '').trim();
-      if (sourceId) bySourceId.set(sourceId, id);
+  async function bulkDeleteFoldersAction(ids: string[]) {
+    const folderIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!folderIds.length) return;
+    try {
+      await bulkDeleteFolders(authedFetch, folderIds);
+      await Promise.all([ciphersQuery.refetch(), foldersQuery.refetch()]);
+      pushToast('success', t('txt_folders_deleted'));
+    } catch (error) {
+      pushToast('error', error instanceof Error ? error.message : t('txt_delete_all_folders_failed'));
+      throw error;
     }
-    return { byIndex, bySourceId };
   }
 
   async function uploadImportedAttachments(
@@ -1383,7 +1391,7 @@ export default function App() {
       const file = new File([fileBytes], name, { type: 'application/octet-stream' });
       const cipher = cipherById.get(targetCipherId) || null;
       try {
-        await uploadCipherAttachment(authedFetch, session, targetCipherId, file, cipher);
+        await uploadCipherAttachment(importAuthedFetch, session, targetCipherId, file, cipher);
         imported += 1;
       } catch (error) {
         failed.push({
@@ -1426,82 +1434,65 @@ export default function App() {
 
     const mode = options.folderMode || 'original';
     const targetFolderId = (options.targetFolderId || '').trim() || null;
-    const folderIdByCipherIndex = new Map<number, string>();
-    let createdFolderCount = 0;
+    const nextPayload: CiphersImportPayload = {
+      ciphers: [],
+      folders: [],
+      folderRelationships: [],
+    };
     if (mode === 'original') {
-      const folderIdByImportIndex = new Map<number, string>();
-      const folderIdByLegacyId = new Map<string, string>();
-      const folderIdByName = new Map<string, string>();
-      const createdFolderIdByName = new Map<string, string>();
+      const folderIndexByLegacyId = new Map<string, number>();
+      const folderIndexByName = new Map<string, number>();
       for (let i = 0; i < payload.folders.length; i++) {
         const folderRaw = (payload.folders[i] || {}) as Record<string, unknown>;
         const name = String(folderRaw.name || '').trim();
         if (!name) continue;
-        let folderId = createdFolderIdByName.get(name) || null;
-        if (!folderId) {
-          const created = await createFolder(authedFetch, session, name);
-          folderId = created.id;
-          createdFolderIdByName.set(name, folderId);
-          createdFolderCount += 1;
+        let folderIndex = folderIndexByName.get(name);
+        if (folderIndex == null) {
+          folderIndex = nextPayload.folders.length;
+          nextPayload.folders.push({ name: await encryptFolderImportName(session, name) });
+          folderIndexByName.set(name, folderIndex);
         }
-        folderIdByImportIndex.set(i, folderId);
-        folderIdByName.set(name, folderId);
         const legacyId = String(folderRaw.id || '').trim();
-        if (legacyId) folderIdByLegacyId.set(legacyId, folderId);
-      }
-      for (const relation of payload.folderRelationships || []) {
-        const cipherIndex = Number(relation?.key);
-        const folderIndex = Number(relation?.value);
-        if (!Number.isFinite(cipherIndex) || !Number.isFinite(folderIndex)) continue;
-        const folderId = folderIdByImportIndex.get(folderIndex);
-        if (folderId) folderIdByCipherIndex.set(cipherIndex, folderId);
+        if (legacyId) folderIndexByLegacyId.set(legacyId, folderIndex);
       }
       for (let i = 0; i < payload.ciphers.length; i++) {
-        if (folderIdByCipherIndex.has(i)) continue;
         const raw = (payload.ciphers[i] || {}) as Record<string, unknown>;
-        const rawFolderId = String(raw.folderId || '').trim();
-        if (rawFolderId && folderIdByLegacyId.has(rawFolderId)) {
-          folderIdByCipherIndex.set(i, folderIdByLegacyId.get(rawFolderId)!);
-          continue;
+        let folderIndex: number | undefined;
+        for (const relation of payload.folderRelationships || []) {
+          const cipherIndex = Number(relation?.key);
+          const relFolderIndex = Number(relation?.value);
+          if (cipherIndex !== i || !Number.isFinite(relFolderIndex)) continue;
+          const importedFolder = payload.folders[relFolderIndex] as Record<string, unknown> | undefined;
+          const importedName = String(importedFolder?.name || '').trim();
+          if (importedName) folderIndex = folderIndexByName.get(importedName);
+          if (folderIndex != null) break;
         }
-        const rawFolderName = String(raw.folder || '').trim();
-        if (rawFolderName && folderIdByName.has(rawFolderName)) {
-          folderIdByCipherIndex.set(i, folderIdByName.get(rawFolderName)!);
+        if (folderIndex == null) {
+          const rawFolderId = String(raw.folderId || '').trim();
+          if (rawFolderId) folderIndex = folderIndexByLegacyId.get(rawFolderId);
         }
-      }
-    } else if (mode === 'target' && targetFolderId) {
-      for (let i = 0; i < payload.ciphers.length; i++) {
-        folderIdByCipherIndex.set(i, targetFolderId);
+        if (folderIndex == null) {
+          const rawFolderName = String(raw.folder || '').trim();
+          if (rawFolderName) folderIndex = folderIndexByName.get(rawFolderName);
+        }
+        if (folderIndex != null) {
+          nextPayload.folderRelationships.push({ key: i, value: folderIndex });
+        }
       }
     }
-
-    const createdCipherIdsByIndex = new Map<number, string>();
     for (let i = 0; i < payload.ciphers.length; i++) {
       const raw = (payload.ciphers[i] || {}) as Record<string, unknown>;
-      const draft = importCipherToDraft(raw, null);
-      const created = await createCipher(authedFetch, session, draft);
-      createdCipherIdsByIndex.set(i, created.id);
+      const draft = importCipherToDraft(raw, mode === 'target' ? targetFolderId : null);
+      nextPayload.ciphers.push(await buildCipherImportPayload(session, draft));
     }
-
-    const moveIdsByFolderId = new Map<string, string[]>();
-    for (const [index, folderId] of folderIdByCipherIndex.entries()) {
-      const cipherId = createdCipherIdsByIndex.get(index);
-      if (!cipherId || !folderId) continue;
-      const group = moveIdsByFolderId.get(folderId) || [];
-      group.push(cipherId);
-      moveIdsByFolderId.set(folderId, group);
-    }
-    for (const [folderId, ids] of moveIdsByFolderId.entries()) {
-      await bulkMoveCiphers(authedFetch, ids, folderId);
-    }
-
-    const idMaps = buildImportedCipherMaps(payload.ciphers, createdCipherIdsByIndex);
-    await foldersQuery.refetch();
-    await ciphersQuery.refetch();
+    const importedCipherMap = await importCiphers(importAuthedFetch, nextPayload, {
+      returnCipherMap: attachments.length > 0,
+    });
+    await Promise.all([foldersQuery.refetch(), ciphersQuery.refetch()]);
     const attachmentSummary = attachments.length
-      ? await uploadImportedAttachments(attachments, idMaps)
+      ? await uploadImportedAttachments(attachments, toImportedCipherMapsFromResponse(importedCipherMap))
       : undefined;
-    return summarizeImportResult(payload.ciphers, mode === 'original' ? createdFolderCount : 0, attachmentSummary);
+    return summarizeImportResult(payload.ciphers, mode === 'original' ? nextPayload.folders.length : 0, attachmentSummary);
   }
 
   async function handleImportEncryptedRawAction(
@@ -1522,7 +1513,7 @@ export default function App() {
       for (const raw of nextPayload.ciphers) (raw as Record<string, unknown>).folderId = targetFolderId;
     }
 
-    const importedCipherMap = await importCiphers(authedFetch, nextPayload, {
+    const importedCipherMap = await importCiphers(importAuthedFetch, nextPayload, {
       returnCipherMap: attachments.length > 0,
     });
     await Promise.all([ciphersQuery.refetch(), foldersQuery.refetch()]);
@@ -2070,6 +2061,7 @@ export default function App() {
                     onNotify={pushToast}
                     onCreateFolder={createFolderAction}
                     onDeleteFolder={deleteFolderAction}
+                    onBulkDeleteFolders={bulkDeleteFoldersAction}
                     onDownloadAttachment={downloadVaultAttachment}
                   />
                 </Route>

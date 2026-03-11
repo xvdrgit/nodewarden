@@ -469,6 +469,34 @@ export class StorageService {
     await this.db.prepare('DELETE FROM ciphers WHERE id = ? AND user_id = ?').bind(id, userId).run();
   }
 
+  async bulkSoftDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const now = new Date().toISOString();
+    const patch = JSON.stringify({
+      deletedAt: now,
+      updatedAt: now,
+    });
+    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(
+          `UPDATE ciphers
+           SET deleted_at = ?, updated_at = ?, data = json_patch(data, ?)
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .bind(now, now, patch, userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
   async getAllCiphers(userId: string): Promise<Cipher[]> {
     const res = await this.db.prepare('SELECT data FROM ciphers WHERE user_id = ? ORDER BY updated_at DESC').bind(userId).all<{ data: string }>();
     return (res.results || []).flatMap(r => {
@@ -512,7 +540,7 @@ export class StorageService {
       folderId,
       updatedAt: now,
     });
-    const chunkSize = LIMITS.performance.bulkMoveChunkSize;
+    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
 
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
       const chunk = uniqueIds.slice(i, i + chunkSize);
@@ -560,6 +588,42 @@ export class StorageService {
 
   async deleteFolder(id: string, userId: string): Promise<void> {
     await this.db.prepare('DELETE FROM folders WHERE id = ? AND user_id = ?').bind(id, userId).run();
+  }
+
+  async bulkDeleteFolders(ids: string[], userId: string): Promise<string | null> {
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+    const now = new Date().toISOString();
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const res = await this.db
+        .prepare(`SELECT data FROM ciphers WHERE user_id = ? AND folder_id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .all<{ data: string }>();
+
+      for (const row of res.results || []) {
+        let cipher: Cipher;
+        try {
+          cipher = JSON.parse(row.data) as Cipher;
+        } catch {
+          continue;
+        }
+        cipher.folderId = null;
+        cipher.updatedAt = now;
+        await this.saveCipher(cipher);
+      }
+
+      await this.db
+        .prepare(`DELETE FROM folders WHERE user_id = ? AND id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
   }
 
   // Clear folder references from all ciphers owned by the user.
@@ -926,6 +990,40 @@ export class StorageService {
 
   async deleteSend(id: string, userId: string): Promise<void> {
     await this.db.prepare('DELETE FROM sends WHERE id = ? AND user_id = ?').bind(id, userId).run();
+  }
+
+  async getSendsByIds(ids: string[], userId: string): Promise<Send[]> {
+    if (ids.length === 0) return [];
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return [];
+    const placeholders = uniqueIds.map(() => '?').join(',');
+    const res = await this.db
+      .prepare(
+        `SELECT id, user_id, type, name, notes, data, key, password_hash, password_salt, password_iterations, auth_type, emails, max_access_count, access_count, disabled, hide_email, created_at, updated_at, expiration_date, deletion_date
+         FROM sends
+         WHERE user_id = ? AND id IN (${placeholders})`
+      )
+      .bind(userId, ...uniqueIds)
+      .all<any>();
+    return (res.results || []).map((row) => this.mapSendRow(row));
+  }
+
+  async bulkDeleteSends(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(`DELETE FROM sends WHERE user_id = ? AND id IN (${placeholders})`)
+        .bind(userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
   }
 
   async getAllSends(userId: string): Promise<Send[]> {

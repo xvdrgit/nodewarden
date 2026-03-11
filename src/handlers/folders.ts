@@ -136,3 +136,27 @@ export async function handleDeleteFolder(request: Request, env: Env, userId: str
 
   return new Response(null, { status: 204 });
 }
+
+// POST /api/folders/delete
+export async function handleBulkDeleteFolders(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+
+  let body: { ids?: string[] };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  const ids = Array.isArray(body.ids) ? body.ids.map((id) => String(id || '').trim()).filter(Boolean) : [];
+  if (!ids.length) {
+    return errorResponse('Folder ids are required', 400);
+  }
+
+  const revisionDate = await storage.bulkDeleteFolders(ids, userId);
+  if (revisionDate) {
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
+  }
+
+  return new Response(null, { status: 204 });
+}

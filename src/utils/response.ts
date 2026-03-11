@@ -17,25 +17,10 @@ const DEFAULT_CORS_HEADERS = [
   'X-Device-Name',
 ];
 
-function isTrustedClientOrigin(origin: string): boolean {
-  // Official browser extension / desktop-webview common origins.
-  if (origin.startsWith('chrome-extension://')) return true;
-  if (origin.startsWith('moz-extension://')) return true;
-  if (origin.startsWith('safari-web-extension://')) return true;
-  if (origin.startsWith('app://')) return true;
-  if (origin.startsWith('capacitor://')) return true;
-  if (origin.startsWith('ionic://')) return true;
-  return false;
-}
-
 function getAllowedOrigin(request: Request): string | null {
   const origin = request.headers.get('Origin');
-  if (!origin) return null;
-
-  const targetOrigin = new URL(request.url).origin;
-  if (origin === targetOrigin) return origin;
-  if (isTrustedClientOrigin(origin)) return origin;
-  return null;
+  if (!origin) return '*';
+  return origin;
 }
 
 function buildCorsHeaders(request: Request): Record<string, string> {
@@ -48,14 +33,16 @@ function buildCorsHeaders(request: Request): Record<string, string> {
   const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': CORS_METHODS,
     'Access-Control-Allow-Headers': allowHeaders.join(', '),
+    'Access-Control-Expose-Headers': '*',
     'Access-Control-Max-Age': String(LIMITS.cors.preflightMaxAgeSeconds),
+    'Access-Control-Allow-Private-Network': 'true',
   };
 
   const allowedOrigin = getAllowedOrigin(request);
   if (allowedOrigin) {
     headers['Access-Control-Allow-Origin'] = allowedOrigin;
     headers['Access-Control-Allow-Credentials'] = 'true';
-    headers['Vary'] = 'Origin';
+    headers['Vary'] = 'Origin, Access-Control-Request-Headers';
   }
 
   return headers;
@@ -131,14 +118,6 @@ export function identityErrorResponse(message: string, error: string = 'invalid_
 
 // Handle CORS preflight
 export function handleCors(request: Request): Response {
-  const origin = request.headers.get('Origin');
-  if (origin) {
-    const allowedOrigin = getAllowedOrigin(request);
-    if (!allowedOrigin) {
-      return new Response(null, { status: 403 });
-    }
-  }
-
   return new Response(null, {
     status: 204,
     headers: buildCorsHeaders(request),
