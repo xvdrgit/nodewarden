@@ -112,10 +112,6 @@ function randomGuid(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function toAesBuffer(bytes: Uint8Array): ArrayBuffer {
-  return new Uint8Array(bytes).buffer;
-}
-
 async function getCipherKeyParts(cipher: Cipher, userEnc: Uint8Array, userMac: Uint8Array): Promise<{ enc: Uint8Array; mac: Uint8Array }> {
   if (cipher.key && typeof cipher.key === 'string') {
     try {

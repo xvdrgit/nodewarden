@@ -22,8 +22,18 @@ import type {
 const SESSION_KEY = 'nodewarden.web.session.v4';
 const DEVICE_IDENTIFIER_KEY = 'nodewarden.web.device.identifier.v1';
 const TOTP_REMEMBER_TOKEN_KEY = 'nodewarden.web.totp.remember-token.v1';
+const BULK_API_CHUNK_SIZE = 200;
 
 type SessionSetter = (next: SessionState | null) => void;
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  if (items.length <= size) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+}
 
 export function loadSession(): SessionState | null {
   try {
@@ -396,12 +406,15 @@ export async function bulkDeleteFolders(
   authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
   ids: string[]
 ): Promise<void> {
-  const resp = await authedFetch('/api/folders/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-  });
-  if (!resp.ok) throw new Error('Bulk delete folders failed');
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const chunk of chunkArray(uniqueIds, BULK_API_CHUNK_SIZE)) {
+    const resp = await authedFetch('/api/folders/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: chunk }),
+    });
+    if (!resp.ok) throw new Error('Bulk delete folders failed');
+  }
 }
 
 export async function updateFolder(
@@ -450,31 +463,96 @@ export async function importCiphers(
 ): Promise<ImportedCipherMapEntry[] | null> {
   const returnCipherMap = !!options?.returnCipherMap;
   const url = returnCipherMap ? '/api/ciphers/import?returnCipherMap=1' : '/api/ciphers/import';
-  const resp = await authedFetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-  if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Import failed'));
-  if (!returnCipherMap) return null;
-  const body =
-    (await parseJson<{
-      cipherMap?: Array<{ index?: number; sourceId?: string | null; id?: string }>;
-    }>(resp)) || {};
-  if (!Array.isArray(body.cipherMap)) return [];
-  const out: ImportedCipherMapEntry[] = [];
-  for (const row of body.cipherMap) {
-    const index = Number(row?.index);
-    const id = String(row?.id || '').trim();
-    if (!Number.isFinite(index) || !id) continue;
-    const sourceRaw = String(row?.sourceId || '').trim();
-    out.push({
-      index,
-      id,
-      sourceId: sourceRaw || null,
+  const totalItems = (payload.folders?.length || 0) + (payload.ciphers?.length || 0);
+  const responses: ImportedCipherMapEntry[] = [];
+  const folderChunkSize = Math.min(BULK_API_CHUNK_SIZE, Math.max(0, BULK_API_CHUNK_SIZE - 1));
+
+  if (totalItems <= BULK_API_CHUNK_SIZE || payload.folders.length > folderChunkSize) {
+    const resp = await authedFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
     });
+    if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Import failed'));
+    if (!returnCipherMap) return null;
+    const body =
+      (await parseJson<{
+        cipherMap?: Array<{ index?: number; sourceId?: string | null; id?: string }>;
+      }>(resp)) || {};
+    if (!Array.isArray(body.cipherMap)) return [];
+    for (const row of body.cipherMap) {
+      const index = Number(row?.index);
+      const id = String(row?.id || '').trim();
+      if (!Number.isFinite(index) || !id) continue;
+      const sourceRaw = String(row?.sourceId || '').trim();
+      responses.push({
+        index,
+        id,
+        sourceId: sourceRaw || null,
+      });
+    }
+    return responses;
   }
-  return out;
+
+  const folders = payload.folders || [];
+  const relationshipsByCipher = new Map<number, number | null>();
+  for (const relation of payload.folderRelationships || []) {
+    relationshipsByCipher.set(Number(relation.key), Number(relation.value));
+  }
+
+  for (const cipherChunkStart of Array.from({ length: Math.ceil(payload.ciphers.length / BULK_API_CHUNK_SIZE) }, (_, i) => i * BULK_API_CHUNK_SIZE)) {
+    const cipherChunk = payload.ciphers.slice(cipherChunkStart, cipherChunkStart + BULK_API_CHUNK_SIZE);
+    const usedFolderIndices = Array.from(
+      new Set(
+        cipherChunk
+          .map((_, localIndex) => relationshipsByCipher.get(cipherChunkStart + localIndex))
+          .filter((value): value is number => Number.isFinite(value as number) && (value as number) >= 0)
+      )
+    );
+    const folderIndexMap = new Map<number, number>();
+    const chunkFolders = usedFolderIndices.map((folderIndex, localIndex) => {
+      folderIndexMap.set(folderIndex, localIndex);
+      return folders[folderIndex];
+    });
+    const chunkRelationships = cipherChunk
+      .map((_, localIndex) => {
+        const originalCipherIndex = cipherChunkStart + localIndex;
+        const originalFolderIndex = relationshipsByCipher.get(originalCipherIndex);
+        if (!Number.isFinite(originalFolderIndex as number)) return null;
+        const localFolderIndex = folderIndexMap.get(Number(originalFolderIndex));
+        if (!Number.isFinite(localFolderIndex as number)) return null;
+        return { key: localIndex, value: Number(localFolderIndex) };
+      })
+      .filter((value): value is { key: number; value: number } => !!value);
+
+    const resp = await authedFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ciphers: cipherChunk,
+        folders: chunkFolders,
+        folderRelationships: chunkRelationships,
+      }),
+    });
+    if (!resp.ok) throw new Error(await parseErrorMessage(resp, 'Import failed'));
+    if (!returnCipherMap) continue;
+    const body =
+      (await parseJson<{
+        cipherMap?: Array<{ index?: number; sourceId?: string | null; id?: string }>;
+      }>(resp)) || {};
+    for (const row of body.cipherMap || []) {
+      const localIndex = Number(row?.index);
+      const id = String(row?.id || '').trim();
+      if (!Number.isFinite(localIndex) || !id) continue;
+      const sourceRaw = String(row?.sourceId || '').trim();
+      responses.push({
+        index: cipherChunkStart + localIndex,
+        id,
+        sourceId: sourceRaw || null,
+      });
+    }
+  }
+  return returnCipherMap ? responses : null;
 }
 
 export interface AttachmentDownloadInfo {
@@ -1170,12 +1248,45 @@ export async function bulkDeleteCiphers(
   authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
   ids: string[]
 ): Promise<void> {
-  const resp = await authedFetch('/api/ciphers/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-  });
-  if (!resp.ok) throw new Error('Bulk delete failed');
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const chunk of chunkArray(uniqueIds, BULK_API_CHUNK_SIZE)) {
+    const resp = await authedFetch('/api/ciphers/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: chunk }),
+    });
+    if (!resp.ok) throw new Error('Bulk delete failed');
+  }
+}
+
+export async function bulkPermanentDeleteCiphers(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  ids: string[]
+): Promise<void> {
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const chunk of chunkArray(uniqueIds, BULK_API_CHUNK_SIZE)) {
+    const resp = await authedFetch('/api/ciphers/delete-permanent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: chunk }),
+    });
+    if (!resp.ok) throw new Error('Bulk permanent delete failed');
+  }
+}
+
+export async function bulkRestoreCiphers(
+  authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
+  ids: string[]
+): Promise<void> {
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const chunk of chunkArray(uniqueIds, BULK_API_CHUNK_SIZE)) {
+    const resp = await authedFetch('/api/ciphers/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: chunk }),
+    });
+    if (!resp.ok) throw new Error('Bulk restore failed');
+  }
 }
 
 export async function bulkMoveCiphers(
@@ -1183,12 +1294,15 @@ export async function bulkMoveCiphers(
   ids: string[],
   folderId: string | null
 ): Promise<void> {
-  const resp = await authedFetch('/api/ciphers/move', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids, folderId }),
-  });
-  if (!resp.ok) throw new Error('Bulk move failed');
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const chunk of chunkArray(uniqueIds, BULK_API_CHUNK_SIZE)) {
+    const resp = await authedFetch('/api/ciphers/move', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: chunk, folderId }),
+    });
+    if (!resp.ok) throw new Error('Bulk move failed');
+  }
 }
 
 function toIsoDateFromDays(value: string, required: boolean): string | null {
@@ -1416,12 +1530,15 @@ export async function bulkDeleteSends(
   authedFetch: (input: string, init?: RequestInit) => Promise<Response>,
   ids: string[]
 ): Promise<void> {
-  const resp = await authedFetch('/api/sends/delete', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ids }),
-  });
-  if (!resp.ok) throw new Error('Bulk delete sends failed');
+  const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  for (const chunk of chunkArray(uniqueIds, BULK_API_CHUNK_SIZE)) {
+    const resp = await authedFetch('/api/sends/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: chunk }),
+    });
+    if (!resp.ok) throw new Error('Bulk delete sends failed');
+  }
 }
 
 async function buildPublicSendAccessPayload(password?: string, keyPart?: string | null): Promise<Record<string, unknown>> {

@@ -541,3 +541,58 @@ export async function handleBulkDeleteCiphers(request: Request, env: Env, userId
 
   return new Response(null, { status: 204 });
 }
+
+// POST /api/ciphers/restore - Bulk restore
+export async function handleBulkRestoreCiphers(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+
+  let body: { ids?: string[] };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  if (!body.ids || !Array.isArray(body.ids)) {
+    return errorResponse('ids array is required', 400);
+  }
+
+  const revisionDate = await storage.bulkRestoreCiphers(body.ids, userId);
+  if (revisionDate) {
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
+  }
+
+  return new Response(null, { status: 204 });
+}
+
+// POST /api/ciphers/delete-permanent - Bulk permanent delete
+export async function handleBulkPermanentDeleteCiphers(request: Request, env: Env, userId: string): Promise<Response> {
+  const storage = new StorageService(env.DB);
+
+  let body: { ids?: string[] };
+  try {
+    body = await request.json();
+  } catch {
+    return errorResponse('Invalid JSON', 400);
+  }
+
+  if (!body.ids || !Array.isArray(body.ids)) {
+    return errorResponse('ids array is required', 400);
+  }
+
+  const ids = Array.from(new Set(body.ids.map((id) => String(id || '').trim()).filter(Boolean)));
+  if (!ids.length) {
+    return new Response(null, { status: 204 });
+  }
+
+  for (const id of ids) {
+    await deleteAllAttachmentsForCipher(env, id);
+  }
+
+  const revisionDate = await storage.bulkDeleteCiphers(ids, userId);
+  if (revisionDate) {
+    await notifyVaultSyncForRequest(request, env, userId, revisionDate);
+  }
+
+  return new Response(null, { status: 204 });
+}

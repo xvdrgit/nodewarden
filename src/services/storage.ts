@@ -109,6 +109,7 @@ export class StorageService {
   private static schemaVerified = false;
   private static lastRefreshTokenCleanupAt = 0;
   private static lastAttachmentTokenCleanupAt = 0;
+  private static readonly MAX_D1_SQL_VARIABLES = 100;
 
   private static readonly REFRESH_TOKEN_CLEANUP_INTERVAL_MS = LIMITS.cleanup.refreshTokenCleanupIntervalMs;
   private static readonly ATTACHMENT_TOKEN_CLEANUP_INTERVAL_MS = LIMITS.cleanup.attachmentTokenCleanupIntervalMs;
@@ -124,6 +125,13 @@ export class StorageService {
    */
   private safeBind(stmt: D1PreparedStatement, ...values: any[]): D1PreparedStatement {
     return stmt.bind(...values.map(v => v === undefined ? null : v));
+  }
+
+  private sqlChunkSize(fixedBindCount: number): number {
+    return Math.max(
+      1,
+      Math.min(LIMITS.performance.bulkMoveChunkSize, StorageService.MAX_D1_SQL_VARIABLES - fixedBindCount)
+    );
   }
 
   private async sha256Hex(input: string): Promise<string> {
@@ -479,7 +487,7 @@ export class StorageService {
       deletedAt: now,
       updatedAt: now,
     });
-    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+    const chunkSize = this.sqlChunkSize(4);
 
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
       const chunk = uniqueIds.slice(i, i + chunkSize);
@@ -491,6 +499,53 @@ export class StorageService {
            WHERE user_id = ? AND id IN (${placeholders})`
         )
         .bind(now, now, patch, userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
+  async bulkRestoreCiphers(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const now = new Date().toISOString();
+    const patch = JSON.stringify({
+      deletedAt: null,
+      updatedAt: now,
+    });
+    const chunkSize = this.sqlChunkSize(3);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(
+          `UPDATE ciphers
+           SET deleted_at = NULL, updated_at = ?, data = json_patch(data, ?)
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .bind(now, patch, userId, ...chunk)
+        .run();
+    }
+
+    return this.updateRevisionDate(userId);
+  }
+
+  async bulkDeleteCiphers(ids: string[], userId: string): Promise<string | null> {
+    if (ids.length === 0) return null;
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return null;
+
+    const chunkSize = this.sqlChunkSize(1);
+
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      await this.db
+        .prepare(`DELETE FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`)
+        .bind(userId, ...chunk)
         .run();
     }
 
@@ -523,13 +578,22 @@ export class StorageService {
 
   async getCiphersByIds(ids: string[], userId: string): Promise<Cipher[]> {
     if (ids.length === 0) return [];
-    // D1 doesn't support binding arrays directly; build placeholders.
-    const placeholders = ids.map(() => '?').join(',');
-    const stmt = this.db.prepare(`SELECT data FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
-    const res = await stmt.bind(userId, ...ids).all<{ data: string }>();
-    return (res.results || []).flatMap(r => {
-      try { return [JSON.parse(r.data) as Cipher]; } catch { return []; }
-    });
+    const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
+    if (!uniqueIds.length) return [];
+    const chunkSize = this.sqlChunkSize(1);
+    const out: Cipher[] = [];
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const stmt = this.db.prepare(`SELECT data FROM ciphers WHERE user_id = ? AND id IN (${placeholders})`);
+      const res = await stmt.bind(userId, ...chunk).all<{ data: string }>();
+      out.push(
+        ...(res.results || []).flatMap(r => {
+          try { return [JSON.parse(r.data) as Cipher]; } catch { return []; }
+        })
+      );
+    }
+    return out;
   }
 
   async bulkMoveCiphers(ids: string[], folderId: string | null, userId: string): Promise<string | null> {
@@ -540,7 +604,7 @@ export class StorageService {
       folderId,
       updatedAt: now,
     });
-    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+    const chunkSize = this.sqlChunkSize(4);
 
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
       const chunk = uniqueIds.slice(i, i + chunkSize);
@@ -594,7 +658,7 @@ export class StorageService {
     const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
     if (!uniqueIds.length) return null;
 
-    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+    const chunkSize = this.sqlChunkSize(1);
     const now = new Date().toISOString();
 
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
@@ -728,7 +792,7 @@ export class StorageService {
     if (cipherIds.length === 0) return grouped;
 
     const uniqueCipherIds = [...new Set(cipherIds)];
-    const chunkSize = LIMITS.performance.bulkMoveChunkSize;
+    const chunkSize = this.sqlChunkSize(0);
 
     for (let i = 0; i < uniqueCipherIds.length; i += chunkSize) {
       const chunk = uniqueCipherIds.slice(i, i + chunkSize);
@@ -996,23 +1060,29 @@ export class StorageService {
     if (ids.length === 0) return [];
     const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
     if (!uniqueIds.length) return [];
-    const placeholders = uniqueIds.map(() => '?').join(',');
-    const res = await this.db
-      .prepare(
-        `SELECT id, user_id, type, name, notes, data, key, password_hash, password_salt, password_iterations, auth_type, emails, max_access_count, access_count, disabled, hide_email, created_at, updated_at, expiration_date, deletion_date
-         FROM sends
-         WHERE user_id = ? AND id IN (${placeholders})`
-      )
-      .bind(userId, ...uniqueIds)
-      .all<any>();
-    return (res.results || []).map((row) => this.mapSendRow(row));
+    const chunkSize = this.sqlChunkSize(1);
+    const out: Send[] = [];
+    for (let i = 0; i < uniqueIds.length; i += chunkSize) {
+      const chunk = uniqueIds.slice(i, i + chunkSize);
+      const placeholders = chunk.map(() => '?').join(',');
+      const res = await this.db
+        .prepare(
+          `SELECT id, user_id, type, name, notes, data, key, password_hash, password_salt, password_iterations, auth_type, emails, max_access_count, access_count, disabled, hide_email, created_at, updated_at, expiration_date, deletion_date
+           FROM sends
+           WHERE user_id = ? AND id IN (${placeholders})`
+        )
+        .bind(userId, ...chunk)
+        .all<any>();
+      out.push(...(res.results || []).map((row) => this.mapSendRow(row)));
+    }
+    return out;
   }
 
   async bulkDeleteSends(ids: string[], userId: string): Promise<string | null> {
     if (ids.length === 0) return null;
     const uniqueIds = Array.from(new Set(ids.map((id) => String(id || '').trim()).filter(Boolean)));
     if (!uniqueIds.length) return null;
-    const chunkSize = Math.min(LIMITS.performance.bulkMoveChunkSize, 90);
+    const chunkSize = this.sqlChunkSize(1);
 
     for (let i = 0; i < uniqueIds.length; i += chunkSize) {
       const chunk = uniqueIds.slice(i, i + chunkSize);

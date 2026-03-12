@@ -74,10 +74,15 @@ export default function JwtWarningPage(props: JwtWarningPageProps) {
 
 function generateJwtSecret(length: number): string {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
-  const bytes = crypto.getRandomValues(new Uint8Array(length));
   let out = '';
-  for (let i = 0; i < length; i += 1) {
-    out += chars[bytes[i] % chars.length];
+  const maxUnbiasedByte = Math.floor(256 / chars.length) * chars.length;
+  while (out.length < length) {
+    const bytes = crypto.getRandomValues(new Uint8Array(length));
+    for (const value of bytes) {
+      if (value >= maxUnbiasedByte) continue;
+      out += chars[value % chars.length];
+      if (out.length >= length) break;
+    }
   }
   return out;
 }

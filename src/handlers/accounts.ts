@@ -46,7 +46,16 @@ function validateKdfParams(kdfType: number | undefined, kdfIterations: number | 
 }
 
 function normalizeTotpSecret(input: string): string {
-  return input.toUpperCase().replace(/[\s-]/g, '').replace(/=+$/g, '');
+  const raw = String(input || '').toUpperCase();
+  let out = '';
+  for (const char of raw) {
+    if (char === ' ' || char === '\t' || char === '\n' || char === '\r' || char === '-') continue;
+    out += char;
+  }
+  while (out.endsWith('=')) {
+    out = out.slice(0, -1);
+  }
+  return out;
 }
 
 function normalizeRecoveryCodeInput(input: string): string {

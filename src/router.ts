@@ -35,6 +35,8 @@ import {
   handlePartialUpdateCipher,
   handleBulkMoveCiphers,
   handleBulkDeleteCiphers,
+  handleBulkPermanentDeleteCiphers,
+  handleBulkRestoreCiphers,
 } from './handlers/ciphers';
 
 // Folder handlers
@@ -605,6 +607,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (path === '/api/ciphers/delete' && method === 'POST') {
       return handleBulkDeleteCiphers(request, env, userId);
+    }
+
+    if (path === '/api/ciphers/delete-permanent' && method === 'POST') {
+      return handleBulkPermanentDeleteCiphers(request, env, userId);
+    }
+
+    if (path === '/api/ciphers/restore' && method === 'POST') {
+      return handleBulkRestoreCiphers(request, env, userId);
     }
 
     // Bulk cipher operations (only move is allowed)
