@@ -17,10 +17,10 @@ import {
   type AuthedFetch,
 } from './shared';
 import { readResponseBytesWithProgress } from '../download';
-import { loadVaultSyncSnapshot } from './vault-sync';
+import { loadVaultCoreSyncSnapshot } from './vault-sync';
 
 export async function getFolders(authedFetch: AuthedFetch): Promise<Folder[]> {
-  const body = await loadVaultSyncSnapshot(authedFetch);
+  const body = await loadVaultCoreSyncSnapshot(authedFetch);
   return body.folders || [];
 }
 
@@ -93,7 +93,7 @@ export async function updateFolder(
 }
 
 export async function getCiphers(authedFetch: AuthedFetch): Promise<Cipher[]> {
-  const body = await loadVaultSyncSnapshot(authedFetch);
+  const body = await loadVaultCoreSyncSnapshot(authedFetch);
   return body.ciphers || [];
 }
 
@@ -563,9 +563,13 @@ async function encryptUris(
   mac: Uint8Array
 ): Promise<Array<Record<string, unknown>>> {
   const out: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
   for (const entry of uris || []) {
     const trimmed = String(entry?.uri || '').trim();
     if (!trimmed) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
     const preservedExtra =
       entry?.extra && typeof entry.extra === 'object'
         ? { ...entry.extra }
