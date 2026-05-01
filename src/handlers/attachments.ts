@@ -21,13 +21,13 @@ import {
   putBlobObject,
 } from '../services/blob-store';
 
-async function notifyVaultSyncForRequest(
+function notifyVaultSyncForRequest(
   request: Request,
   env: Env,
   userId: string,
   revisionDate: string
-): Promise<void> {
-  await notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
+): void {
+  notifyUserVaultSync(env, userId, revisionDate, readActingDeviceIdentifier(request));
 }
 
 // Format file size to human readable
@@ -93,7 +93,7 @@ async function processAttachmentUpload(
 
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
-    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
   }
 
   return new Response(null, { status: 201 });
@@ -153,7 +153,7 @@ export async function handleCreateAttachment(
   // Update cipher revision date
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
-    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
   }
 
   // Get updated cipher for response
@@ -324,7 +324,7 @@ export async function handleUpdateAttachmentMetadata(
   await storage.saveAttachment(attachment);
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
-    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
   }
 
   return jsonResponse({
@@ -426,13 +426,10 @@ export async function handleDeleteAttachment(
   // Delete attachment metadata
   await storage.deleteAttachment(attachmentId);
 
-  // Remove attachment from cipher
-  await storage.removeAttachmentFromCipher(cipherId, attachmentId);
-
   // Update cipher revision date
   const revisionInfo = await storage.updateCipherRevisionDate(cipherId);
   if (revisionInfo) {
-    await notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
+    notifyVaultSyncForRequest(request, env, revisionInfo.userId, revisionInfo.revisionDate);
   }
 
   // Get updated cipher for response
@@ -449,11 +446,24 @@ export async function deleteAllAttachmentsForCipher(
   env: Env,
   cipherId: string
 ): Promise<void> {
+  await deleteAllAttachmentsForCiphers(env, [cipherId]);
+}
+
+export async function deleteAllAttachmentsForCiphers(
+  env: Env,
+  cipherIds: string[]
+): Promise<void> {
   const storage = new StorageService(env.DB);
-  const attachments = await storage.getAttachmentsByCipher(cipherId);
-  await runWithConcurrency(attachments, LIMITS.performance.attachmentDeleteConcurrency, async (attachment) => {
+  const attachmentsByCipher = await storage.getAttachmentsByCipherIds(cipherIds);
+  const attachments = Array.from(attachmentsByCipher.entries()).flatMap(([ownedCipherId, items]) =>
+    items.map((attachment) => ({ attachment, cipherId: ownedCipherId }))
+  );
+  if (!attachments.length) return;
+
+  await runWithConcurrency(attachments, LIMITS.performance.attachmentDeleteConcurrency, async ({ attachment, cipherId }) => {
     const path = getAttachmentObjectKey(cipherId, attachment.id);
     await deleteBlobObject(env, path);
-    await storage.deleteAttachment(attachment.id);
   });
+
+  await storage.bulkDeleteAttachmentsByIds(attachments.map(({ attachment }) => attachment.id));
 }
