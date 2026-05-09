@@ -417,6 +417,17 @@
     @apply rounded-2xl;
   }
 
+  .detail-col {
+    @apply overflow-visible rounded-2xl border-0 bg-transparent p-0 shadow-none;
+  }
+
+  .mobile-detail-sheet.detail-col {
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
   .card {
     @apply p-3.5;
   }
@@ -477,6 +488,7 @@
   }
 
   .settings-modules-grid,
+  .domain-rules-grid,
   .password-settings-grid {
     grid-template-columns: 1fr;
   }
