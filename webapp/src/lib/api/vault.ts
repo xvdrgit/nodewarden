@@ -1,4 +1,4 @@
-import { base64ToBytes, decryptBw, decryptBwFileData, decryptStr, encryptBw, encryptBwFileData } from '../crypto';
+import { base64ToBytes, decryptBw, decryptBwFileData, decryptStr, encryptBw, encryptBwFileData, sha256Base64 } from '../crypto';
 import type {
   Cipher,
   CipherPasswordHistoryEntry,
@@ -574,12 +574,18 @@ async function encryptUris(
       entry?.extra && typeof entry.extra === 'object'
         ? { ...entry.extra }
         : {};
-    if (String(entry?.originalUri || '').trim() !== trimmed) {
+    const canReuseChecksum = String(entry?.originalUri || '').trim() === trimmed;
+    if (!canReuseChecksum) {
       delete preservedExtra.uriChecksum;
     }
+    const preservedChecksum = typeof preservedExtra.uriChecksum === 'string' && looksLikeCipherString(preservedExtra.uriChecksum)
+      ? preservedExtra.uriChecksum
+      : null;
+    const uriChecksum = preservedChecksum || await encryptTextValue(await sha256Base64(trimmed), enc, mac);
     out.push({
       ...preservedExtra,
       uri: await encryptTextValue(trimmed, enc, mac),
+      uriChecksum,
       match: typeof entry?.match === 'number' && Number.isFinite(entry.match) ? entry.match : null,
     });
   }
@@ -801,6 +807,13 @@ export async function deleteCipher(authedFetch: AuthedFetch, cipherId: string): 
   const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(cipherId)}`, { method: 'DELETE' });
   if (!resp.ok) throw new Error('Delete item failed');
   return (await parseJson<Cipher>(resp))!;
+}
+
+export async function permanentDeleteCipher(authedFetch: AuthedFetch, cipherId: string): Promise<void> {
+  const id = String(cipherId || '').trim();
+  if (!id) throw new Error('Cipher id is required');
+  const resp = await authedFetch(`/api/ciphers/${encodeURIComponent(id)}/delete`, { method: 'DELETE' });
+  if (!resp.ok) throw new Error('Permanent delete item failed');
 }
 
 export async function archiveCipher(authedFetch: AuthedFetch, cipherId: string): Promise<Cipher> {
