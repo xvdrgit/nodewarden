@@ -44,6 +44,9 @@
     // Public read-only request budget per IP per minute.
     // 公开只读接口每 IP 每分钟请求配额。
     publicReadRequestsPerMinute: 120,
+    // Public website icon proxy budget per IP per minute.
+    // 公开网站图标代理每 IP 每分钟请求配额。
+    publicIconRequestsPerMinute: 500,
     // Sensitive public/auth request budget per IP per minute.
     // 敏感公开/认证接口每 IP 每分钟请求配额。
     sensitivePublicRequestsPerMinute: 30,
@@ -145,6 +148,11 @@
   compatibility: {
     // Single source of truth for /config.version and /api/version.
     // /config.version 与 /api/version 的统一版本号来源。
-    bitwardenServerVersion: '2026.1.0',
+    bitwardenServerVersion: '2026.4.1',
+    // Official 2026.4.x clients need this flag to receive and use cipher.key.
+    // Hiding existing item keys makes item-key encrypted vault data unreadable.
+    // 官方 2026.4.x 客户端需要该开关来接收并使用 cipher.key。
+    // 隐藏已有逐项密钥会导致逐项密钥加密的密码库数据无法解密。
+    cipherKeyEncryptionFeatureEnabled: true,
   },
 } as const;
