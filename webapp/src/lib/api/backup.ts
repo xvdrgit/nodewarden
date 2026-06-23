@@ -6,6 +6,7 @@ import type {
   BackupRuntimeState,
   BackupScheduleConfig,
   BackupSettings as AdminBackupSettings,
+  S3BackupAddressingStyle,
   S3BackupDestination,
   WebDavBackupDestination,
 } from '@shared/backup-schema';
@@ -26,6 +27,7 @@ export type {
   BackupRuntimeState,
   BackupScheduleConfig,
   AdminBackupSettings,
+  S3BackupAddressingStyle,
   S3BackupDestination,
   WebDavBackupDestination,
 };
@@ -96,6 +98,7 @@ export interface AdminBackupImportCounts {
   users: number;
   domainSettings?: number;
   userRevisions: number;
+  trustedTwoFactorDeviceTokens?: number;
   webauthnCredentials?: number;
   folders: number;
   ciphers: number;
